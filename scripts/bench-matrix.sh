@@ -713,8 +713,9 @@ for mode in "${TX_MODES[@]}"; do
             net_after_rx="$(sum_net_bytes rx)"
             net_after_tx="$(sum_net_bytes tx)"
 
-            bench_fields="$(printf '%s' "$bench_json" | "$PYTHON_BIN" -c '
-import json, sys
+            bench_fields="$(printf '%s' "$bench_json" | "$PYTHON_BIN" - <<'PY'
+import json
+import sys
 
 d = json.load(sys.stdin)
 avg = d.get("avg_latency_ms", 0)
@@ -723,8 +724,16 @@ err = d.get("error_requests", 0)
 dur = d.get("duration_seconds", 0)
 status_counts = d.get("status_counts", {})
 first_error = (d.get("first_error", "") or "").replace("\n", " ").replace("\t", " ")
-print(f"{avg:.2f}\t{thr:.2f}\t{err}\t{dur:.4f}\t{json.dumps(status_counts, separators=(\",\", \":\"))}\t{first_error}")
-')"
+sys.stdout.write("{:.2f}\t{:.2f}\t{}\t{:.4f}\t{}\t{}".format(
+    avg,
+    thr,
+    err,
+    dur,
+    json.dumps(status_counts, separators=(",", ":")),
+    first_error,
+))
+PY
+)"
 
             avg_latency="$(echo "$bench_fields" | awk '{print $1}')"
             throughput="$(echo "$bench_fields" | awk '{print $2}')"
