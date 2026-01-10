@@ -21,10 +21,10 @@ type OrderItem struct {
 }
 
 type Order struct {
-	ID        OrderID
-	Status    OrderStatus
-	Total     int64 // в минимальных единицах (копейки/центы)
-	Items     []OrderItem
+	ID     OrderID
+	Status OrderStatus
+	Total  int64 // в минимальных единицах (копейки/центы)
+	Items  []OrderItem
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
