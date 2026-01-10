@@ -30,6 +30,7 @@ ORDER_BASE_URL="$(trim "${ORDER_BASE_URL:-http://127.0.0.1:8080}")"
 
 RESULTS_DIR="$(trim "${RESULTS_DIR:-results}")"
 CONCURRENCY="$(trim "${CONCURRENCY:-10}")"
+BENCH_LOG_DIR="$(trim "${BENCH_LOG_DIR:-${RESULTS_DIR}/bench-logs}")"
 
 # TX modes: override via TX_MODES="twopc saga-orch tcc outbox"
 TX_MODES_STR="$(trim "${TX_MODES:-}")"
@@ -89,7 +90,7 @@ command -v go >/dev/null 2>&1 || die "go not found in PATH"
 [[ -n "$NAMESPACE" ]] || die "NAMESPACE is empty"
 kubectl get ns "$NAMESPACE" >/dev/null 2>&1 || die "namespace '$NAMESPACE' not found"
 
-mkdir -p "$RESULTS_DIR" "$ORDER_PF_LOG_DIR"
+mkdir -p "$RESULTS_DIR" "$ORDER_PF_LOG_DIR" "$BENCH_LOG_DIR"
 
 # ----------------------------
 # Resolve deployment name
@@ -603,13 +604,40 @@ run_bench_json() {
   local base_url="$1"
   local tx="$2"
   local conc="$3"
+  local log_file="$4"
 
   local out
-  if ! out="$($BENCH_BIN -base-url "$base_url" -total "$tx" -concurrency "$conc")"; then
-    log "bench-runner failed; see stderr output above"
+  if ! out="$($BENCH_BIN -base-url "$base_url" -total "$tx" -concurrency "$conc" 2>"$log_file")"; then
+    log "bench-runner failed; see $log_file"
+    return 1
+  fi
+  if [[ -z "${out//[[:space:]]/}" ]]; then
+    log "bench-runner produced empty output; see $log_file"
     return 1
   fi
   printf '%s' "$out" | extract_first_json_object
+}
+
+run_bench_json_with_retry() {
+  local base_url="$1"
+  local tx="$2"
+  local conc="$3"
+  local log_file="$4"
+
+  local attempt
+  for attempt in 1 2; do
+    if bench_json="$(run_bench_json "$base_url" "$tx" "$conc" "$log_file")"; then
+      printf '%s' "$bench_json"
+      return 0
+    fi
+    if [[ "$MANAGE_ORDER_PF" == "1" ]]; then
+      log "bench-runner failed (attempt $attempt); restarting port-forward and retrying once"
+      restart_order_pf
+    fi
+    sleep 0.5
+  done
+
+  return 1
 }
 
 smoke_check() {
@@ -708,7 +736,10 @@ for mode in "${TX_MODES[@]}"; do
             net_before_rx="$(sum_net_bytes rx)"
             net_before_tx="$(sum_net_bytes tx)"
 
-            bench_json="$(run_bench_json "$BENCH_BASE_URL" "$tx" "$CONCURRENCY")"
+            bench_log="${BENCH_LOG_DIR}/bench-${timestamp}-${mode}-${profile}-r${replicas}-tx${tx}.log"
+            if ! bench_json="$(run_bench_json_with_retry "$BENCH_BASE_URL" "$tx" "$CONCURRENCY" "$bench_log")"; then
+              die "bench-runner failed after retry; see $bench_log"
+            fi
 
             net_after_rx="$(sum_net_bytes rx)"
             net_after_tx="$(sum_net_bytes tx)"
