@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,20 +18,22 @@ import (
 )
 
 type benchResult struct {
-	Timestamp          string  `json:"timestamp"`
-	BaseURL            string  `json:"base_url"`
-	Scenario           string  `json:"scenario"`
-	Transactions       int     `json:"transactions"`
-	OperationsPerTx    int     `json:"operations_per_transaction"`
-	TotalRequests      int     `json:"total_requests"`
-	TotalOperations    int     `json:"total_operations"`
-	SuccessfulRequests int     `json:"successful_requests"`
-	ErrorRequests      int     `json:"error_requests"`
-	DurationSeconds    float64 `json:"duration_seconds"`
-	AvgLatencyMs       float64 `json:"avg_latency_ms"`
-	MinLatencyMs       float64 `json:"min_latency_ms"`
-	MaxLatencyMs       float64 `json:"max_latency_ms"`
-	ThroughputRPS      float64 `json:"throughput_rps"`
+	Timestamp          string         `json:"timestamp"`
+	BaseURL            string         `json:"base_url"`
+	Scenario           string         `json:"scenario"`
+	Transactions       int            `json:"transactions"`
+	OperationsPerTx    int            `json:"operations_per_transaction"`
+	TotalRequests      int            `json:"total_requests"`
+	TotalOperations    int            `json:"total_operations"`
+	SuccessfulRequests int            `json:"successful_requests"`
+	ErrorRequests      int            `json:"error_requests"`
+	DurationSeconds    float64        `json:"duration_seconds"`
+	AvgLatencyMs       float64        `json:"avg_latency_ms"`
+	MinLatencyMs       float64        `json:"min_latency_ms"`
+	MaxLatencyMs       float64        `json:"max_latency_ms"`
+	ThroughputRPS      float64        `json:"throughput_rps"`
+	StatusCounts       map[string]int `json:"status_counts"`
+	FirstError         string         `json:"first_error"`
 }
 
 type operation struct {
@@ -40,15 +43,21 @@ type operation struct {
 }
 
 type metrics struct {
-	mu         sync.Mutex
-	success    int
-	errors     int
-	total      time.Duration
-	minLatency time.Duration
-	maxLatency time.Duration
+	mu           sync.Mutex
+	success      int
+	errors       int
+	total        time.Duration
+	minLatency   time.Duration
+	maxLatency   time.Duration
+	statusCounts map[string]int
+	firstError   string
 }
 
-func (m *metrics) record(latency time.Duration, err error) {
+func newMetrics() *metrics {
+	return &metrics{statusCounts: make(map[string]int)}
+}
+
+func (m *metrics) recordTransaction(latency time.Duration, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err != nil {
@@ -62,6 +71,15 @@ func (m *metrics) record(latency time.Duration, err error) {
 	}
 	if latency > m.maxLatency {
 		m.maxLatency = latency
+	}
+}
+
+func (m *metrics) recordStatus(status int, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.statusCounts[strconv.Itoa(status)]++
+	if err != nil && m.firstError == "" {
+		m.firstError = err.Error()
 	}
 }
 
@@ -94,7 +112,7 @@ func main() {
 
 	tasks := make(chan struct{})
 	var wg sync.WaitGroup
-	m := &metrics{}
+	m := newMetrics()
 	client := &http.Client{}
 
 	start := time.Now()
@@ -105,8 +123,8 @@ func main() {
 			for range tasks {
 				txid := uuid.NewString()
 				orderID := uuid.NewString()
-				latency, err := runTransaction(ops, txid, orderID, client, *timeout)
-				m.record(latency, err)
+				latency, err := runTransaction(ops, txid, orderID, client, *timeout, m)
+				m.recordTransaction(latency, err)
 			}
 		}()
 	}
@@ -142,6 +160,8 @@ func main() {
 		MinLatencyMs:       minLatency,
 		MaxLatencyMs:       maxLatency,
 		ThroughputRPS:      float64(m.success) / duration.Seconds(),
+		StatusCounts:       m.statusCounts,
+		FirstError:         m.firstError,
 	}
 
 	encoder := json.NewEncoder(os.Stdout)
@@ -326,36 +346,38 @@ func buildOperations(scenario, orderURL, inventoryURL, paymentURL, shippingURL s
 	return ops, nil
 }
 
-func runTransaction(ops []operation, txid, orderID string, client *http.Client, timeout time.Duration) (time.Duration, error) {
+func runTransaction(ops []operation, txid, orderID string, client *http.Client, timeout time.Duration, m *metrics) (time.Duration, error) {
 	start := time.Now()
 	for _, op := range ops {
-		if err := postJSON(op.url, op.payload(txid, orderID), client, timeout); err != nil {
+		status, err := doCheckout(op.url, op.payload(txid, orderID), client, timeout)
+		m.recordStatus(status, err)
+		if err != nil {
 			return time.Since(start), fmt.Errorf("%s: %w", op.name, err)
 		}
 	}
 	return time.Since(start), nil
 }
 
-func postJSON(url string, payload any, client *http.Client, timeout time.Duration) error {
+func doCheckout(url string, payload any, client *http.Client, timeout time.Duration) (int, error) {
 	data, _ := json.Marshal(payload)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
 	if err != nil {
-		return err
+		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", uuid.NewString())
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+		return resp.StatusCode, fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-	return nil
+	return resp.StatusCode, nil
 }
 
 func writeJSON(path string, result benchResult) error {

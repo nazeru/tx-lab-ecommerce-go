@@ -44,6 +44,19 @@ TX_COUNTS=(10000)
 LATENCIES_MS=(100)
 JITTERS_MS=(20)
 
+# Network profile parameters (lossy/congested)
+LOSSY_LOSS_PCT="$(trim "${LOSSY_LOSS_PCT:-1}")"
+LOSSY_DUP_PCT="$(trim "${LOSSY_DUP_PCT:-0.1}")"
+LOSSY_REORDER_PCT="$(trim "${LOSSY_REORDER_PCT:-0.1}")"
+LOSSY_REORDER_CORR="$(trim "${LOSSY_REORDER_CORR:-25}")"
+
+CONGEST_DELAY_MS="$(trim "${CONGEST_DELAY_MS:-80}")"
+CONGEST_JITTER_MS="$(trim "${CONGEST_JITTER_MS:-20}")"
+CONGEST_RATE="$(trim "${CONGEST_RATE:-20mbit}")"
+CONGEST_BURST="$(trim "${CONGEST_BURST:-32kb}")"
+CONGEST_LIMIT_PKTS="$(trim "${CONGEST_LIMIT_PKTS:-10000}")"
+CONGEST_LOSS_PCT="$(trim "${CONGEST_LOSS_PCT:-0.2}")"
+
 # Port-forward management for order-service (restarted after every TX_MODE switch)
 MANAGE_ORDER_PF="${MANAGE_ORDER_PF:-1}"                     # 1/0
 ORDER_PF_ADDR="$(trim "${ORDER_PF_ADDR:-127.0.0.1}")"
@@ -52,7 +65,10 @@ ORDER_PF_LOG_DIR="$(trim "${ORDER_PF_LOG_DIR:-${RESULTS_DIR}/pf-logs}")"
 
 # Rollout timeouts
 ROLLOUT_TIMEOUT="$(trim "${ROLLOUT_TIMEOUT:-5m}")"
-PODS_READY_TIMEOUT="$(trim "${PODS_READY_TIMEOUT:-3m}")"
+PODS_READY_TIMEOUT_SECONDS="$(trim "${PODS_READY_TIMEOUT_SECONDS:-180}")"
+WAIT_AFTER_NETEM="$(trim "${WAIT_AFTER_NETEM:-1}")"
+
+SMOKE="${SMOKE:-0}"
 
 # python3 preferred
 PYTHON_BIN="${PYTHON_BIN:-python3}"
@@ -224,9 +240,13 @@ cat <<HEADER > "$md_file"
 * TX modes: ${TX_MODES[*]}
 * Net profiles: ${NET_PROFILES[*]}
 * Port-forward restart policy: stop before TX_MODE switch, start after rollout (MANAGE_ORDER_PF=$MANAGE_ORDER_PF)
+* Net profile parameters:
+  * normal: delay/jitter from matrix (no loss)
+  * lossy: loss=${LOSSY_LOSS_PCT}%, dup=${LOSSY_DUP_PCT}%, reorder=${LOSSY_REORDER_PCT}% corr=${LOSSY_REORDER_CORR}%
+  * congested: delay=${CONGEST_DELAY_MS}ms jitter=${CONGEST_JITTER_MS}ms loss=${CONGEST_LOSS_PCT}% rate=${CONGEST_RATE} burst=${CONGEST_BURST} limit=${CONGEST_LIMIT_PKTS}
 
-| TX mode | Net profile | Replicas | Transactions | Latency (ms) | Jitter (ms) | Avg latency (ms) | Throughput (rps) | Errors | CPU (m) | Memory (Mi) | Net RX (KB/s) | Net TX (KB/s) |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| TX mode | Net profile | Replicas | Transactions | Latency (ms) | Jitter (ms) | Avg latency (ms) | Throughput (rps) | Errors | Status counts | First error | CPU (m) | Memory (Mi) | Net RX (KB/s) | Net TX (KB/s) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 HEADER
 
 echo "[" > "$json_file"
@@ -295,7 +315,7 @@ scale_replicas() {
   local replicas="$1"
   kubectl -n "$NAMESPACE" scale deployment "$DEPLOYMENT" --replicas="$replicas" >/dev/null
   ensure_rollout
-  wait_pods_stable 180
+  wait_pods_stable "$PODS_READY_TIMEOUT_SECONDS"
 }
 
 list_pods() {
@@ -305,41 +325,54 @@ list_pods() {
 # ----------------------------
 # Netem helpers (profiles)
 # ----------------------------
+apply_tc_cmd() {
+  local pod="$1"
+  shift
+  kubectl exec -n "$NAMESPACE" "$pod" -- "$@" >/dev/null 2>&1 || true
+}
+
 apply_netem_profile() {
   local profile="$1"
   local delay_ms="$2"
   local jitter_ms="$3"
 
-  local extra=""
-  case "$profile" in
-    normal)
-      extra=""
-      ;;
-    lossy)
-      # add small packet loss
-      extra=" loss 1%"
-      ;;
-    congested)
-      # add reorder to emulate queue instability
-      extra=" reorder 25% 50%"
-      ;;
-    *)
-      die "unknown net profile: $profile"
-      ;;
-  esac
-
   local pod
   for pod in $(list_pods); do
-    # NOTE: ignore failures to avoid hard crash if tc is missing; you can remove '|| true' if you prefer strictness.
-    kubectl exec -n "$NAMESPACE" "$pod" -- \
-      tc qdisc replace dev eth0 root netem delay "${delay_ms}ms" "${jitter_ms}ms"${extra} >/dev/null 2>&1 || true
+    apply_tc_cmd "$pod" tc qdisc del dev eth0 root
+
+    case "$profile" in
+      normal)
+        if [[ "$delay_ms" != "0" || "$jitter_ms" != "0" ]]; then
+          apply_tc_cmd "$pod" tc qdisc replace dev eth0 root netem delay "${delay_ms}ms" "${jitter_ms}ms"
+        fi
+        ;;
+      lossy)
+        apply_tc_cmd "$pod" tc qdisc replace dev eth0 root netem \
+          delay "${delay_ms}ms" "${jitter_ms}ms" \
+          loss "${LOSSY_LOSS_PCT}%" \
+          duplicate "${LOSSY_DUP_PCT}%" \
+          reorder "${LOSSY_REORDER_PCT}%" "${LOSSY_REORDER_CORR}%"
+        ;;
+      congested)
+        apply_tc_cmd "$pod" tc qdisc replace dev eth0 root handle 1: netem \
+          delay "${delay_ms}ms" "${jitter_ms}ms" \
+          loss "${CONGEST_LOSS_PCT}%"
+        apply_tc_cmd "$pod" tc qdisc replace dev eth0 parent 1:1 handle 10: tbf \
+          rate "$CONGEST_RATE" \
+          burst "$CONGEST_BURST" \
+          limit "$CONGEST_LIMIT_PKTS"
+        ;;
+      *)
+        die "unknown net profile: $profile"
+        ;;
+    esac
   done
 }
 
 clear_netem() {
   local pod
   for pod in $(list_pods); do
-    kubectl exec -n "$NAMESPACE" "$pod" -- tc qdisc del dev eth0 root >/dev/null 2>&1 || true
+    apply_tc_cmd "$pod" tc qdisc del dev eth0 root
   done
 }
 
@@ -357,16 +390,27 @@ sum_net_bytes() {
   echo "$total"
 }
 
+METRICS_WARNING_EMITTED="0"
+
 capture_top() {
   local output=""
   local i
 
   # metrics-server может не успеть отдать метрики сразу после рестарта pod'ов
   for i in $(seq 1 20); do
-    output=$(kubectl top pods -n "$NAMESPACE" -l "$LABEL_SELECTOR" --no-headers 2>/dev/null || true)
-    if [[ -n "$output" ]]; then
+    output="$(kubectl top pods -n "$NAMESPACE" -l "$LABEL_SELECTOR" --no-headers 2>&1 || true)"
+    if [[ -n "$output" && "$output" != *"Metrics API not available"* && "$output" != *"metrics.k8s.io"* ]]; then
       break
     fi
+    if [[ "$output" == *"Metrics API not available"* || "$output" == *"metrics.k8s.io"* ]]; then
+      if [[ "$METRICS_WARNING_EMITTED" == "0" ]]; then
+        log "WARNING: Metrics API not available (kubectl top returned: $output)"
+        METRICS_WARNING_EMITTED="1"
+      fi
+      output=""
+      break
+    fi
+    output=""
     sleep 0.5
   done
 
@@ -387,6 +431,7 @@ capture_top() {
 # ----------------------------
 ORDER_PF_PID=""
 ORDER_PF_LOG=""
+ORDER_PF_LOG_LINES=0
 
 have_port_listener() {
   local port="$1"
@@ -397,6 +442,34 @@ have_port_listener() {
   if command -v lsof >/dev/null 2>&1; then
     lsof -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
     return $?
+  fi
+  return 1
+}
+
+check_tcp_open() {
+  local host="$1"
+  local port="$2"
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 1 bash -c "cat < /dev/null > /dev/tcp/${host}/${port}" >/dev/null 2>&1
+    return $?
+  fi
+  bash -c "cat < /dev/null > /dev/tcp/${host}/${port}" >/dev/null 2>&1
+  return $?
+}
+
+pf_log_has_disconnects() {
+  if [[ -z "$ORDER_PF_LOG" || ! -f "$ORDER_PF_LOG" ]]; then
+    return 1
+  fi
+  local total_lines
+  total_lines="$(wc -l < "$ORDER_PF_LOG" | tr -d ' ')"
+  local new_lines=$((total_lines - ORDER_PF_LOG_LINES))
+  if (( new_lines <= 0 )); then
+    return 1
+  fi
+  ORDER_PF_LOG_LINES="$total_lines"
+  if tail -n "$new_lines" "$ORDER_PF_LOG" | grep -Eiq "lost connection to pod|network namespace.*closed"; then
+    return 0
   fi
   return 1
 }
@@ -412,8 +485,13 @@ stop_order_pf() {
   if [[ -n "${ORDER_PF_PID//[[:space:]]/}" ]]; then
     if kill -0 "$ORDER_PF_PID" >/dev/null 2>&1; then
       kill "$ORDER_PF_PID" >/dev/null 2>&1 || true
-      # give it a moment
-      sleep 0.2
+      local i
+      for i in $(seq 1 20); do
+        if ! kill -0 "$ORDER_PF_PID" >/dev/null 2>&1; then
+          break
+        fi
+        sleep 0.1
+      done
       if kill -0 "$ORDER_PF_PID" >/dev/null 2>&1; then
         kill -9 "$ORDER_PF_PID" >/dev/null 2>&1 || true
       fi
@@ -421,6 +499,7 @@ stop_order_pf() {
   fi
   ORDER_PF_PID=""
   ORDER_PF_LOG=""
+  ORDER_PF_LOG_LINES=0
   # also clean up any matching stray processes
   kill_existing_order_pf
 }
@@ -444,11 +523,12 @@ start_order_pf() {
   log "Starting port-forward for order: svc/$ORDER_SERVICE_NAME -> ${ORDER_PF_ADDR}:${ORDER_PF_PORT}"
   kubectl -n "$NAMESPACE" port-forward "svc/$ORDER_SERVICE_NAME" "${ORDER_PF_PORT}:8080" --address "$ORDER_PF_ADDR" >"$ORDER_PF_LOG" 2>&1 &
   ORDER_PF_PID="$!"
+  ORDER_PF_LOG_LINES=0
 
   # wait until port starts listening or process dies
   local i
   for i in $(seq 1 80); do
-    if have_port_listener "$ORDER_PF_PORT"; then
+    if have_port_listener "$ORDER_PF_PORT" || check_tcp_open "$ORDER_PF_ADDR" "$ORDER_PF_PORT"; then
       log "Port-forward is listening on ${ORDER_PF_ADDR}:${ORDER_PF_PORT}"
       return 0
     fi
@@ -463,6 +543,29 @@ start_order_pf() {
   log "Timeout while waiting for port-forward to listen; last log lines:"
   tail -n 80 "$ORDER_PF_LOG" >&2 || true
   die "order port-forward did not start listening on ${ORDER_PF_ADDR}:${ORDER_PF_PORT}"
+}
+
+restart_order_pf() {
+  log "Restarting order port-forward"
+  stop_order_pf
+  start_order_pf
+}
+
+ensure_order_pf() {
+  if [[ "$MANAGE_ORDER_PF" != "1" ]]; then
+    return 0
+  fi
+  if [[ -z "$ORDER_PF_PID" || ! -e "/proc/$ORDER_PF_PID" ]]; then
+    restart_order_pf
+    return 0
+  fi
+  if ! have_port_listener "$ORDER_PF_PORT" && ! check_tcp_open "$ORDER_PF_ADDR" "$ORDER_PF_PORT"; then
+    restart_order_pf
+    return 0
+  fi
+  if pf_log_has_disconnects; then
+    restart_order_pf
+  fi
 }
 
 # ----------------------------
@@ -502,8 +605,34 @@ run_bench_json() {
   local conc="$3"
 
   local out
-  out="$("$BENCH_BIN" -base-url "$base_url" -total "$tx" -concurrency "$conc" 2>&1)"
+  if ! out="$($BENCH_BIN -base-url "$base_url" -total "$tx" -concurrency "$conc")"; then
+    log "bench-runner failed; see stderr output above"
+    return 1
+  fi
   printf '%s' "$out" | extract_first_json_object
+}
+
+smoke_check() {
+  local base_url="$1"
+  local order_id
+  local idempotency_key
+  order_id="$($PYTHON_BIN -c 'import uuid; print(uuid.uuid4())')"
+  idempotency_key="$($PYTHON_BIN -c 'import uuid; print(uuid.uuid4())')"
+
+  local payload
+  payload="$($PYTHON_BIN -c "import json; print(json.dumps({'order_id': '$order_id', 'total': 1200, 'items': [{'product_id': 'sku-1', 'quantity': 1}]}))")"
+
+  local http_code
+  http_code="$(curl -s -o /dev/null -w '%{http_code}' \
+    -H 'Content-Type: application/json' \
+    -H "Idempotency-Key: $idempotency_key" \
+    -d "$payload" \
+    "${base_url%/}/checkout" || echo "000")"
+
+  log "Smoke check /checkout -> HTTP $http_code"
+  if [[ "$http_code" != 2* ]]; then
+    die "smoke check failed with HTTP $http_code"
+  fi
 }
 
 # ----------------------------
@@ -541,12 +670,17 @@ for mode in "${TX_MODES[@]}"; do
   kubectl -n "$NAMESPACE" set env "deployment/${DEPLOYMENT}" "TX_MODE=${mode}" >/dev/null
   kubectl -n "$NAMESPACE" rollout restart "deployment/${DEPLOYMENT}" >/dev/null
   ensure_rollout
-  wait_pods_stable 180
+  wait_pods_stable "$PODS_READY_TIMEOUT_SECONDS"
 
-  sleep 10
+  sleep 5
 
   if [[ "$MANAGE_ORDER_PF" == "1" ]]; then
     start_order_pf
+  fi
+
+  if [[ "$SMOKE" == "1" ]]; then
+    ensure_order_pf
+    smoke_check "$BENCH_BASE_URL"
   fi
 
   for profile in "${NET_PROFILES[@]}"; do
@@ -556,12 +690,21 @@ for mode in "${TX_MODES[@]}"; do
 
       for latency in "${LATENCIES_MS[@]}"; do
         for jitter in "${JITTERS_MS[@]}"; do
+          effective_latency="$latency"
+          effective_jitter="$jitter"
+          if [[ "$profile" == "congested" ]]; then
+            effective_latency="$CONGEST_DELAY_MS"
+            effective_jitter="$CONGEST_JITTER_MS"
+          fi
+
           # Apply network emulation profile on pods
-          apply_netem_profile "$profile" "$latency" "$jitter"
+          apply_netem_profile "$profile" "$effective_latency" "$effective_jitter"
+          sleep "$WAIT_AFTER_NETEM"
 
           for tx in "${TX_COUNTS[@]}"; do
-            log "RUN mode=$mode profile=$profile replicas=$replicas latency=${latency}ms jitter=${jitter}ms tx=$tx"
+            log "RUN mode=$mode profile=$profile replicas=$replicas latency=${effective_latency}ms jitter=${effective_jitter}ms tx=$tx"
 
+            ensure_order_pf
             net_before_rx="$(sum_net_bytes rx)"
             net_before_tx="$(sum_net_bytes tx)"
 
@@ -572,18 +715,27 @@ for mode in "${TX_MODES[@]}"; do
 
             bench_fields="$(printf '%s' "$bench_json" | "$PYTHON_BIN" -c '
 import json, sys
+
 d = json.load(sys.stdin)
 avg = d.get("avg_latency_ms", 0)
 thr = d.get("throughput_rps", 0)
 err = d.get("error_requests", 0)
 dur = d.get("duration_seconds", 0)
-print(f"{avg:.2f}\t{thr:.2f}\t{err}\t{dur:.4f}")
+status_counts = d.get("status_counts", {})
+first_error = (d.get("first_error", "") or "").replace("\n", " ").replace("\t", " ")
+print(f"{avg:.2f}\t{thr:.2f}\t{err}\t{dur:.4f}\t{json.dumps(status_counts, separators=(\",\", \":\"))}\t{first_error}")
 ')"
 
             avg_latency="$(echo "$bench_fields" | awk '{print $1}')"
             throughput="$(echo "$bench_fields" | awk '{print $2}')"
             errors="$(echo "$bench_fields" | awk '{print $3}')"
             duration="$(echo "$bench_fields" | awk '{print $4}')"
+            status_counts="$(echo "$bench_fields" | cut -f5)"
+            first_error="$(echo "$bench_fields" | cut -f6-)"
+
+            if [[ "$errors" != "0" && -n "$first_error" ]]; then
+              log "ERRORS mode=$mode profile=$profile -> $first_error"
+            fi
 
             top_fields="$(capture_top)"
             cpu_m=""
@@ -599,12 +751,12 @@ print(f"{avg:.2f}\t{thr:.2f}\t{err}\t{dur:.4f}")
             rx_rate=0
             tx_rate=0
             if [[ -n "$duration" && "$duration" != "0" ]]; then
-              rx_rate="$("$PYTHON_BIN" -c "print(int(${rx_delta} / ${duration}))")"
-              tx_rate="$("$PYTHON_BIN" -c "print(int(${tx_delta} / ${duration}))")"
+              rx_rate="$($PYTHON_BIN -c "print(int(${rx_delta} / ${duration}))")"
+              tx_rate="$($PYTHON_BIN -c "print(int(${tx_delta} / ${duration}))")"
             fi
 
-            net_rx_kbps="$("$PYTHON_BIN" -c "print(round(${rx_rate} / 1024, 2))")"
-            net_tx_kbps="$("$PYTHON_BIN" -c "print(round(${tx_rate} / 1024, 2))")"
+            net_rx_kbps="$($PYTHON_BIN -c "print(round(${rx_rate} / 1024, 2))")"
+            net_tx_kbps="$($PYTHON_BIN -c "print(round(${tx_rate} / 1024, 2))")"
 
             if [[ "$first_record" == true ]]; then
               first_record=false
@@ -618,17 +770,20 @@ print(f"{avg:.2f}\t{thr:.2f}\t{err}\t{dur:.4f}")
               printf '    "net_profile": %s,\n' "\"$profile\""
               printf '    "replicas": %s,\n' "$replicas"
               printf '    "transactions": %s,\n' "$tx"
-              printf '    "latency_ms": %s,\n' "$latency"
-              printf '    "jitter_ms": %s,\n' "$jitter"
+              printf '    "latency_ms": %s,\n' "$effective_latency"
+              printf '    "jitter_ms": %s,\n' "$effective_jitter"
               printf '    "bench": %s,\n' "$(printf '%s' "$bench_json" | tr -d '\n')"
               printf '    "resources": {"cpu_millicores": %s, "memory_mib": %s, "network_rx_bytes": %s, "network_tx_bytes": %s, "network_rx_bps": %s, "network_tx_bps": %s}\n' \
                 "${cpu_m:-null}" "${mem_mi:-null}" "$rx_delta" "$tx_delta" "$rx_rate" "$tx_rate"
               printf '%s\n' "  }"
             } >> "$json_file"
 
-            printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' \
-              "$mode" "$profile" "$replicas" "$tx" "$latency" "$jitter" "$avg_latency" "$throughput" "$errors" \
-              "${cpu_m:-n/a}" "${mem_mi:-n/a}" "$net_rx_kbps" "$net_tx_kbps" >> "$md_file"
+            md_first_error="${first_error//|/ }"
+            md_status_counts="${status_counts//|/ }"
+
+            printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' \
+              "$mode" "$profile" "$replicas" "$tx" "$effective_latency" "$effective_jitter" "$avg_latency" "$throughput" "$errors" \
+              "$md_status_counts" "$md_first_error" "${cpu_m:-n/a}" "${mem_mi:-n/a}" "$net_rx_kbps" "$net_tx_kbps" >> "$md_file"
 
             log "DONE mode=$mode profile=$profile replicas=$replicas -> avg=${avg_latency}ms thr=${throughput}rps err=${errors}"
           done
