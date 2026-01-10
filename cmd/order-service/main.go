@@ -1,8 +1,8 @@
 package main
 
 import (
-	"context"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,19 +16,23 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/nazeru/tx-lab-ecommerce-go/pkg/idempotency"
+	"github.com/nazeru/tx-lab-ecommerce-go/pkg/logging"
+	"github.com/nazeru/tx-lab-ecommerce-go/pkg/metrics"
 )
 
 var errIdempotencyRace = errors.New("idempotency race")
 
 type cfg struct {
-	Port              string
-	DatabaseURL        string
-	TxMode             string // twopc | none
-	RequestTimeout     time.Duration
+	Port                string
+	DatabaseURL         string
+	TxMode              string // twopc | none
+	RequestTimeout      time.Duration
 	Mock2PCParticipants bool
-	InventoryBaseURL   string
-	PaymentBaseURL     string
-	ShippingBaseURL    string
+	InventoryBaseURL    string
+	PaymentBaseURL      string
+	ShippingBaseURL     string
 }
 
 func readCfg() (cfg, error) {
@@ -42,7 +46,7 @@ func readCfg() (cfg, error) {
 	mock := strings.ToLower(getenv("MOCK_2PC", "true"))
 
 	return cfg{
-		Port:               port,
+		Port:                port,
 		DatabaseURL:         db,
 		TxMode:              mode,
 		RequestTimeout:      time.Duration(toutMS) * time.Millisecond,
@@ -92,33 +96,49 @@ func main() {
 
 	client := &http.Client{Timeout: cfg.RequestTimeout}
 
+	srvMetrics := metrics.NewServerMetrics("order_service")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
+		srvMetrics.Requests.WithLabelValues("health", "200").Inc()
+		srvMetrics.LatencyMS.WithLabelValues("health").Observe(float64(time.Since(start).Milliseconds()))
 	})
+	mux.Handle("/metrics", metrics.Handler())
 	mux.HandleFunc("/checkout", func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
 		if r.Method != http.MethodPost {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+			srvMetrics.Requests.WithLabelValues("checkout", "405").Inc()
+			srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
 			return
 		}
 		var req CheckoutRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+			srvMetrics.Requests.WithLabelValues("checkout", "400").Inc()
+			srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
 			return
 		}
 		if len(req.Items) == 0 {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "items is required"})
+			srvMetrics.Requests.WithLabelValues("checkout", "400").Inc()
+			srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
 			return
 		}
 		if req.Total < 0 {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "total must be >= 0"})
+			srvMetrics.Requests.WithLabelValues("checkout", "400").Inc()
+			srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
 			return
 		}
 		for _, it := range req.Items {
 			if strings.TrimSpace(it.ProductID) == "" || it.Quantity <= 0 {
 				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "each item must have product_id and quantity > 0"})
+				srvMetrics.Requests.WithLabelValues("checkout", "400").Inc()
+				srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
 				return
 			}
 		}
@@ -128,14 +148,23 @@ func main() {
 			orderID = uuid.NewString()
 		}
 
-		idemKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+		idemKey := idempotency.Key(r)
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 
 		// Идемпотентность: если ключ уже есть, вернём существующий order_id.
 		if idemKey != "" {
 			if existing, err := getOrderByIdempotency(ctx, pool, idemKey); err == nil && existing != "" {
+				logging.Log(logging.Fields{
+					Service:    "order-service",
+					OrderID:    existing,
+					Step:       "checkout",
+					Status:     "idempotent_replay",
+					DurationMS: time.Since(start).Milliseconds(),
+				})
 				writeJSON(w, http.StatusOK, CheckoutResponse{OrderID: existing, Status: "IDEMPOTENT_REPLAY"})
+				srvMetrics.Requests.WithLabelValues("checkout", "200").Inc()
+				srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
 				return
 			}
 		}
@@ -149,18 +178,38 @@ func main() {
 		if err := createOrder(ctx, pool, orderID, idemKey, req.Items, req.Total, txid, cfg); err != nil {
 			if errors.Is(err, errIdempotencyRace) && idemKey != "" {
 				if existing, qerr := getOrderByIdempotency(ctx, pool, idemKey); qerr == nil && existing != "" {
+					logging.Log(logging.Fields{
+						Service:    "order-service",
+						OrderID:    existing,
+						Step:       "checkout",
+						Status:     "idempotent_race",
+						DurationMS: time.Since(start).Milliseconds(),
+					})
 					writeJSON(w, http.StatusOK, CheckoutResponse{OrderID: existing, Status: "IDEMPOTENT_REPLAY"})
+					srvMetrics.Requests.WithLabelValues("checkout", "200").Inc()
+					srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
 					return
 				}
 			}
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			srvMetrics.Requests.WithLabelValues("checkout", "500").Inc()
+			srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
 			return
 		}
 
 		// 2) Если не 2PC — сразу подтверждаем
 		if !strings.EqualFold(cfg.TxMode, "twopc") {
 			_ = updateOrderStatus(ctx, pool, orderID, "CONFIRMED")
+			logging.Log(logging.Fields{
+				Service:    "order-service",
+				OrderID:    orderID,
+				Step:       "checkout",
+				Status:     "confirmed",
+				DurationMS: time.Since(start).Milliseconds(),
+			})
 			writeJSON(w, http.StatusOK, CheckoutResponse{OrderID: orderID, Status: "CONFIRMED"})
+			srvMetrics.Requests.WithLabelValues("checkout", "200").Inc()
+			srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
 			return
 		}
 
@@ -180,7 +229,17 @@ func main() {
 			}
 			_ = updateOrderStatus(ctx, pool, orderID, "REJECTED")
 			_ = updateTxStatus(ctx, pool, txid, "ABORTED")
+			logging.Log(logging.Fields{
+				Service:    "order-service",
+				TxID:       txid,
+				OrderID:    orderID,
+				Step:       "twopc",
+				Status:     "aborted",
+				DurationMS: time.Since(start).Milliseconds(),
+			})
 			writeJSON(w, http.StatusBadGateway, CheckoutResponse{OrderID: orderID, TxID: txid, Status: "ABORTED"})
+			srvMetrics.Requests.WithLabelValues("checkout", "502").Inc()
+			srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
 			return
 		}
 
@@ -191,14 +250,34 @@ func main() {
 				_ = twopcAbort(ctx, client, txid, orderID, participants)
 				_ = updateOrderStatus(ctx, pool, orderID, "REJECTED")
 				_ = updateTxStatus(ctx, pool, txid, "ABORTED")
+				logging.Log(logging.Fields{
+					Service:    "order-service",
+					TxID:       txid,
+					OrderID:    orderID,
+					Step:       "twopc",
+					Status:     "abort_after_commit_fail",
+					DurationMS: time.Since(start).Milliseconds(),
+				})
 				writeJSON(w, http.StatusBadGateway, CheckoutResponse{OrderID: orderID, TxID: txid, Status: "ABORTED"})
+				srvMetrics.Requests.WithLabelValues("checkout", "502").Inc()
+				srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
 				return
 			}
 		}
 
 		_ = updateOrderStatus(ctx, pool, orderID, "CONFIRMED")
 		_ = updateTxStatus(ctx, pool, txid, "COMMITTED")
+		logging.Log(logging.Fields{
+			Service:    "order-service",
+			TxID:       txid,
+			OrderID:    orderID,
+			Step:       "twopc",
+			Status:     "committed",
+			DurationMS: time.Since(start).Milliseconds(),
+		})
 		writeJSON(w, http.StatusOK, CheckoutResponse{OrderID: orderID, TxID: txid, Status: "COMMITTED"})
+		srvMetrics.Requests.WithLabelValues("checkout", "200").Inc()
+		srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
 	})
 
 	srv := &http.Server{
@@ -239,7 +318,7 @@ func createOrder(ctx context.Context, pool *pgxpool.Pool, orderID, idemKey strin
 
 	for _, it := range items {
 		_, err = tx.Exec(ctx,
-			`INSERT INTO order_items(order_id, product_id, quantity) VALUES($1, $2, $3)` ,
+			`INSERT INTO order_items(order_id, product_id, quantity) VALUES($1, $2, $3)`,
 			orderID, it.ProductID, it.Quantity,
 		)
 		if err != nil {
@@ -265,7 +344,7 @@ func createOrder(ctx context.Context, pool *pgxpool.Pool, orderID, idemKey strin
 		parts := buildParticipants(cfg)
 		participantsJSON, _ := json.Marshal(parts)
 		_, err = tx.Exec(ctx,
-			`INSERT INTO twopc_tx_log(txid, order_id, status, participants) VALUES($1, $2, $3, $4)` ,
+			`INSERT INTO twopc_tx_log(txid, order_id, status, participants) VALUES($1, $2, $3, $4)`,
 			txid, orderID, "STARTED", participantsJSON,
 		)
 		if err != nil {

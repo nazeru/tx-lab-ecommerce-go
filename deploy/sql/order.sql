@@ -44,5 +44,20 @@ CREATE TABLE IF NOT EXISTS twopc_tx_log (
 CREATE INDEX IF NOT EXISTS idx_twopc_tx_log_order_id ON twopc_tx_log(order_id);
 CREATE INDEX IF NOT EXISTS idx_twopc_tx_log_status   ON twopc_tx_log(status);
 
-COMMIT;
+-- Outbox / inbox for Kafka delivery
+CREATE TABLE IF NOT EXISTS outbox (
+  id         BIGSERIAL PRIMARY KEY,
+  event_id   TEXT NOT NULL UNIQUE,
+  topic      TEXT NOT NULL,
+  key        TEXT NOT NULL,
+  payload    JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  sent_at    TIMESTAMPTZ NULL
+);
 
+CREATE TABLE IF NOT EXISTS inbox (
+  event_id    TEXT PRIMARY KEY,
+  received_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+COMMIT;

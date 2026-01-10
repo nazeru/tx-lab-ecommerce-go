@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: txlab-netem
+spec:
+  selector:
+    matchLabels:
+      app: txlab-netem
+  template:
+    metadata:
+      labels:
+        app: txlab-netem
+    spec:
+      hostNetwork: true
+      containers:
+        - name: netem
+          image: alpine:3.19
+          securityContext:
+            privileged: true
+          command: ["/bin/sh", "-c"]
+          args:
+            - apk add --no-cache iproute2 &&
+              tc qdisc add dev eth0 root netem delay ${NETEM_DELAY:-0ms} ${NETEM_JITTER:-0ms} loss ${NETEM_LOSS:-0%} &&
+              sleep 3600
+          env:
+            - name: NETEM_DELAY
+              value: "100ms"
+            - name: NETEM_JITTER
+              value: "20ms"
+            - name: NETEM_LOSS
+              value: "0%"
+      tolerations:
+        - operator: "Exists"
