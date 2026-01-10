@@ -84,6 +84,32 @@ CLI позволяет выбирать режим и сценарий (success/
 
 Каждый сервис публикует Prometheus-метрики по `/metrics`.
 
+## Бенчмарки
+
+Единичный прогон нагрузки:
+
+```bash
+go run ./cmd/bench-runner -base-url http://localhost:8080 -total 1000 -concurrency 10
+```
+
+Матрица прогонов (replicas/transactions/latency/jitter) с сохранением результатов в `results/`:
+
+```bash
+./scripts/bench-matrix.sh
+```
+
+Настраиваемые параметры (переменные окружения):
+
+```bash
+NAMESPACE=txlab \
+DEPLOYMENT=order \
+APP_LABEL=order \
+ORDER_BASE_URL=http://localhost:8080 \
+CONCURRENCY=10 \
+RESULTS_DIR=results \
+./scripts/bench-matrix.sh
+```
+
 ## Сетевые помехи
 
 Пример включения netem:
