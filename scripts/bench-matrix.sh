@@ -5,8 +5,12 @@ NAMESPACE=${NAMESPACE:-txlab}
 DEPLOYMENT=${DEPLOYMENT:-order}
 APP_LABEL=${APP_LABEL:-order}
 ORDER_BASE_URL=${ORDER_BASE_URL:-http://localhost:8080}
+INVENTORY_BASE_URL=${INVENTORY_BASE_URL:-}
+PAYMENT_BASE_URL=${PAYMENT_BASE_URL:-}
+SHIPPING_BASE_URL=${SHIPPING_BASE_URL:-}
 RESULTS_DIR=${RESULTS_DIR:-results}
 CONCURRENCY=${CONCURRENCY:-10}
+BENCH_SCENARIO=${BENCH_SCENARIO:-all}
 
 REPLICAS_LIST=(1 3 5 7 10)
 TX_COUNTS=(10000)
@@ -39,6 +43,7 @@ cat <<HEADER > "$md_file"
 * Namespace: $NAMESPACE
 * Deployment: $DEPLOYMENT
 * Base URL: $ORDER_BASE_URL
+* Scenario: $BENCH_SCENARIO
 * Concurrency: $CONCURRENCY
 
 | Replicas | Transactions | Latency (ms) | Jitter (ms) | Avg latency (ms) | Throughput (rps) | Errors | CPU (m) | Memory (Mi) | Net RX (KB/s) | Net TX (KB/s) |

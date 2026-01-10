@@ -86,10 +86,22 @@ CLI позволяет выбирать режим и сценарий (success/
 
 ## Бенчмарки
 
-Единичный прогон нагрузки:
+Единичный прогон нагрузки (checkout):
 
 ```bash
-go run ./cmd/bench-runner -base-url http://localhost:8080 -total 1000 -concurrency 10
+go run ./cmd/bench-runner -base-url http://localhost:8080 -scenario checkout -total 1000 -concurrency 10
+```
+
+Единичный прогон всех методов распределённых транзакций (2PC + TCC):
+
+```bash
+go run ./cmd/bench-runner \
+  -scenario all \
+  -inventory-url http://localhost:8081 \
+  -payment-url http://localhost:8082 \
+  -shipping-url http://localhost:8083 \
+  -total 1000 \
+  -concurrency 10
 ```
 
 Матрица прогонов (replicas/transactions/latency/jitter) с сохранением результатов в `results/`:
@@ -105,6 +117,10 @@ NAMESPACE=txlab \
 DEPLOYMENT=order \
 APP_LABEL=order \
 ORDER_BASE_URL=http://localhost:8080 \
+INVENTORY_BASE_URL=http://localhost:8081 \
+PAYMENT_BASE_URL=http://localhost:8082 \
+SHIPPING_BASE_URL=http://localhost:8083 \
+BENCH_SCENARIO=all \
 CONCURRENCY=10 \
 RESULTS_DIR=results \
 ./scripts/bench-matrix.sh
