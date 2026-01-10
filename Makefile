@@ -5,6 +5,9 @@
   helm-install helm-uninstall \
   migrate \
   cli-run bench \
+  kind-up kind-down \
+  deps fmt test test-race \
+  run-order run-cli \
   logs-order pf-order
 
 # ----------------------------
@@ -25,11 +28,27 @@ SERVICES := order-service payment-service inventory-service shipping-service not
 ORDER_DEPLOY := order
 ORDER_SVC := order
 
+# Local run defaults (override with env or make VAR=value)
+DATABASE_URL ?= postgres://postgres:postgres@localhost:5432/orderdb?sslmode=disable
+TX_MODE ?= twopc
+INVENTORY_BASE_URL ?= http://localhost:8081
+PAYMENT_BASE_URL ?= http://localhost:8082
+SHIPPING_BASE_URL ?= http://localhost:8083
+GOFMT_PATHS := ./cmd ./internal ./pkg
+
 # ----------------------------
 # Help
 # ----------------------------
 help:
 	@echo "Targets:"
+	@echo "  deps                   Download Go module dependencies"
+	@echo "  fmt                    Run gofmt on common source directories"
+	@echo "  test                   Run Go tests"
+	@echo "  test-race              Run Go tests with race detector"
+	@echo "  run-order              Run order-service locally"
+	@echo "  run-cli                Run CLI locally"
+	@echo "  kind-up                Create cluster, build/load images, install Helm chart"
+	@echo "  kind-down              Uninstall Helm chart and delete kind cluster"
 	@echo "  kind-create            Create kind cluster ($(KIND_CLUSTER))"
 	@echo "  kind-delete            Delete kind cluster ($(KIND_CLUSTER))"
 	@echo "  kind-context           Show current kube context"
@@ -45,6 +64,32 @@ help:
 	@echo "  kind-load              Load images for all services (only order is active now)"
 
 # ----------------------------
+# Local dev helpers
+# ----------------------------
+deps:
+	go mod download
+
+fmt:
+	gofmt -w $(GOFMT_PATHS)
+
+test:
+	go test ./...
+
+test-race:
+	go test -race ./...
+
+run-order:
+	DATABASE_URL=$(DATABASE_URL) \
+	TX_MODE=$(TX_MODE) \
+	INVENTORY_BASE_URL=$(INVENTORY_BASE_URL) \
+	PAYMENT_BASE_URL=$(PAYMENT_BASE_URL) \
+	SHIPPING_BASE_URL=$(SHIPPING_BASE_URL) \
+	go run ./cmd/order-service
+
+run-cli:
+	go run ./cmd/cli
+
+# ----------------------------
 # kind helpers
 # ----------------------------
 kind-create:
@@ -58,6 +103,10 @@ kind-delete:
 kind-context:
 	kubectl config current-context
 	kubectl cluster-info || true
+
+kind-up: kind-create docker-build kind-load helm-install
+
+kind-down: helm-uninstall kind-delete
 
 # ----------------------------
 # Docker build/load
