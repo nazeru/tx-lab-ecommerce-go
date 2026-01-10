@@ -1,36 +1,135 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-NAMESPACE=${NAMESPACE:-txlab}
-DEPLOYMENT=${DEPLOYMENT:-order}
-APP_LABEL=${APP_LABEL:-order}
-ORDER_BASE_URL=${ORDER_BASE_URL:-http://localhost:8080}
-INVENTORY_BASE_URL=${INVENTORY_BASE_URL:-}
-PAYMENT_BASE_URL=${PAYMENT_BASE_URL:-}
-SHIPPING_BASE_URL=${SHIPPING_BASE_URL:-}
-RESULTS_DIR=${RESULTS_DIR:-results}
-CONCURRENCY=${CONCURRENCY:-10}
-BENCH_SCENARIO=${BENCH_SCENARIO:-all}
+# ----------------------------
+# Helpers
+# ----------------------------
+trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+
+die() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
+
+# ----------------------------
+# Config (env overrides)
+# ----------------------------
+NAMESPACE="$(trim "${NAMESPACE:-txlab}")"
+DEPLOYMENT="$(trim "${DEPLOYMENT:-order}")"      # логическое имя (order), будет разрешено в реальное имя deployment
+APP_LABEL="$(trim "${APP_LABEL:-order}")"        # больше не обязателен, оставлен для совместимости
+
+ORDER_BASE_URL="$(trim "${ORDER_BASE_URL:-http://localhost:8080}")"
+INVENTORY_BASE_URL="$(trim "${INVENTORY_BASE_URL:-}")"
+PAYMENT_BASE_URL="$(trim "${PAYMENT_BASE_URL:-}")"
+SHIPPING_BASE_URL="$(trim "${SHIPPING_BASE_URL:-}")"
+
+RESULTS_DIR="$(trim "${RESULTS_DIR:-results}")"
+CONCURRENCY="$(trim "${CONCURRENCY:-10}")"
+BENCH_SCENARIO="$(trim "${BENCH_SCENARIO:-all}")"
 
 REPLICAS_LIST=(1 3 5 7 10)
-TX_COUNTS=(10000)
+TX_COUNTS=(1000)
 LATENCIES_MS=(100 500 1000)
 JITTERS_MS=(20)
 
-# python3 preferred
+# Fallback if whitespace-only was provided
+[[ -n "$NAMESPACE" ]] || NAMESPACE="txlab"
+[[ -n "$DEPLOYMENT" ]] || DEPLOYMENT="order"
+[[ -n "$ORDER_BASE_URL" ]] || ORDER_BASE_URL="http://localhost:8080"
+[[ -n "$RESULTS_DIR" ]] || RESULTS_DIR="results"
+[[ -n "$CONCURRENCY" ]] || CONCURRENCY="10"
+[[ -n "$BENCH_SCENARIO" ]] || BENCH_SCENARIO="all"
+
+# ----------------------------
+# Tools
+# ----------------------------
 PYTHON_BIN=${PYTHON_BIN:-python3}
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
   PYTHON_BIN=python
 fi
-if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-  echo "ERROR: python3/python not found in PATH" >&2
+command -v "$PYTHON_BIN" >/dev/null 2>&1 || die "python3/python not found in PATH"
+command -v kubectl >/dev/null 2>&1 || die "kubectl not found in PATH"
+command -v go >/dev/null 2>&1 || die "go not found in PATH"
+
+# ----------------------------
+# Resolve deployment name
+# ----------------------------
+kubectl get ns "$NAMESPACE" >/dev/null 2>&1 || die "namespace '$NAMESPACE' not found"
+
+deployment_exists() {
+  kubectl get deployment "$1" -n "$NAMESPACE" >/dev/null 2>&1
+}
+
+list_deployments() {
+  kubectl get deploy -n "$NAMESPACE" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
+}
+
+resolve_deployment() {
+  local wanted="$1"
+
+  # 1) exact match
+  if deployment_exists "$wanted"; then
+    printf '%s' "$wanted"
+    return 0
+  fi
+
+  # 2) prefer "*-<wanted>-service"
+  local cand
+  cand="$(list_deployments | grep -F "${wanted}-service" | head -n1 || true)"
+  if [[ -n "${cand//[[:space:]]/}" ]] && deployment_exists "$cand"; then
+    printf '%s' "$cand"
+    return 0
+  fi
+
+  # 3) last resort: any deployment containing wanted, but exclude postgres
+  cand="$(list_deployments | grep -F "$wanted" | grep -v postgres | head -n1 || true)"
+  if [[ -n "${cand//[[:space:]]/}" ]] && deployment_exists "$cand"; then
+    printf '%s' "$cand"
+    return 0
+  fi
+
+  return 1
+}
+
+REAL_DEPLOYMENT="$(resolve_deployment "$DEPLOYMENT" || true)"
+if [[ -z "${REAL_DEPLOYMENT//[[:space:]]/}" ]]; then
+  echo "ERROR: deployment '$DEPLOYMENT' not found in namespace '$NAMESPACE'." >&2
+  echo "Deployments in '$NAMESPACE':" >&2
+  kubectl get deploy -n "$NAMESPACE" >&2 || true
   exit 1
 fi
+DEPLOYMENT="$REAL_DEPLOYMENT"
 
-# Build bench-runner once (do NOT use go run in nested loops)
+# ----------------------------
+# Derive pod label selector from deployment.spec.selector.matchLabels
+# ----------------------------
+LABEL_SELECTOR="$(
+  kubectl get deploy "$DEPLOYMENT" -n "$NAMESPACE" -o json | "$PYTHON_BIN" -c '
+import json,sys
+d=json.load(sys.stdin)
+ml=(d.get("spec",{}).get("selector",{}) or {}).get("matchLabels") or {}
+# k8s label selector: k=v,k2=v2
+print(",".join([f"{k}={v}" for k,v in ml.items()]))
+'
+)"
+if [[ -z "${LABEL_SELECTOR//[[:space:]]/}" ]]; then
+  die "cannot derive LABEL_SELECTOR from deployment '$DEPLOYMENT' (.spec.selector.matchLabels is empty)"
+fi
+
+# ----------------------------
+# Build bench-runner once
+# ----------------------------
 BENCH_BIN=${BENCH_BIN:-/tmp/bench-runner}
 go build -o "$BENCH_BIN" ./cmd/bench-runner
 
+# ----------------------------
+# Output files
+# ----------------------------
 timestamp=$(date -u +"%Y%m%dT%H%M%SZ")
 json_file="$RESULTS_DIR/benchmarks-$timestamp.json"
 md_file="$RESULTS_DIR/benchmarks-$timestamp.md"
@@ -42,6 +141,7 @@ cat <<HEADER > "$md_file"
 
 * Namespace: $NAMESPACE
 * Deployment: $DEPLOYMENT
+* Pod selector: $LABEL_SELECTOR
 * Base URL: $ORDER_BASE_URL
 * Scenario: $BENCH_SCENARIO
 * Concurrency: $CONCURRENCY
@@ -53,18 +153,21 @@ HEADER
 echo "[" > "$json_file"
 first_record=true
 
+# ----------------------------
+# K8s helpers
+# ----------------------------
 ensure_rollout() {
   kubectl rollout status "deployment/${DEPLOYMENT}" -n "$NAMESPACE"
 }
 
 scale_replicas() {
   local replicas=$1
-  kubectl scale "deployment/${DEPLOYMENT}" -n "$NAMESPACE" --replicas="$replicas"
+  kubectl scale deployment "$DEPLOYMENT" -n "$NAMESPACE" --replicas="$replicas"
   ensure_rollout
 }
 
 list_pods() {
-  kubectl get pods -n "$NAMESPACE" -l "app=${APP_LABEL}" -o jsonpath='{.items[*].metadata.name}'
+  kubectl get pods -n "$NAMESPACE" -l "$LABEL_SELECTOR" -o jsonpath='{.items[*].metadata.name}'
 }
 
 apply_netem() {
@@ -83,7 +186,6 @@ clear_netem() {
   done
 }
 
-# Ensure we remove netem even if script fails
 cleanup() {
   clear_netem || true
 }
@@ -105,7 +207,7 @@ sum_net_bytes() {
 
 capture_top() {
   local output
-  output=$(kubectl top pods -n "$NAMESPACE" -l "app=${APP_LABEL}" --no-headers 2>/dev/null || true)
+  output=$(kubectl top pods -n "$NAMESPACE" -l "$LABEL_SELECTOR" --no-headers 2>/dev/null || true)
   if [[ -z "$output" ]]; then
     echo ""
     return
@@ -113,8 +215,10 @@ capture_top() {
   echo "$output" | awk '{gsub("m","",$2); gsub("Mi","",$3); cpu+=$2; mem+=$3} END {printf "%d %d", cpu, mem}'
 }
 
+# ----------------------------
+# Bench helpers
+# ----------------------------
 extract_first_json_object() {
-  # Reads mixed output from stdin and prints compact JSON dict to stdout
   "$PYTHON_BIN" -c '
 import json, sys
 text = sys.stdin.read()
@@ -127,7 +231,7 @@ for i, ch in enumerate(text):
     if ch != "{":
         continue
     try:
-        obj, end = dec.raw_decode(text[i:])
+        obj, _ = dec.raw_decode(text[i:])
         if isinstance(obj, dict):
             print(json.dumps(obj, separators=(",", ":")))
             sys.exit(0)
@@ -145,15 +249,14 @@ sys.exit(3)
 run_bench_json() {
   local tx=$1
   local conc=$2
-
-  # capture stdout+stderr, because some programs log to stderr
   local out
   out=$("$BENCH_BIN" -base-url "$ORDER_BASE_URL" -total "$tx" -concurrency "$conc" 2>&1)
-
-  # extract JSON from mixed output
   printf '%s' "$out" | extract_first_json_object
 }
 
+# ----------------------------
+# Main loop
+# ----------------------------
 for replicas in "${REPLICAS_LIST[@]}"; do
   scale_replicas "$replicas"
 
@@ -170,7 +273,6 @@ for replicas in "${REPLICAS_LIST[@]}"; do
         net_after_rx=$(sum_net_bytes rx)
         net_after_tx=$(sum_net_bytes tx)
 
-        # IMPORTANT: use python -c (not heredoc), so stdin remains the piped JSON
         bench_fields=$(printf '%s' "$bench_json" | "$PYTHON_BIN" -c '
 import json, sys
 d = json.load(sys.stdin)

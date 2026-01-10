@@ -103,7 +103,6 @@ func main() {
 		go func() {
 			defer wg.Done()
 			for range tasks {
-				begin := time.Now()
 				txid := uuid.NewString()
 				orderID := uuid.NewString()
 				latency, err := runTransaction(ops, txid, orderID, client, *timeout)
