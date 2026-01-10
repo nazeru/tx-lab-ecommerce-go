@@ -206,6 +206,37 @@ dump_rollout_diagnostics() {
   kubectl get events -n "$NAMESPACE" --sort-by=.metadata.creationTimestamp | tail -n 50 >&2 || true
 }
 
+desired_replicas() {
+  kubectl get deployment "$DEPLOYMENT" -n "$NAMESPACE" -o jsonpath='{.spec.replicas}'
+}
+
+wait_for_ready_pods() {
+  local desired
+  local pods
+  local attempt=0
+
+  desired=$(desired_replicas)
+  if [[ "$desired" == "0" ]]; then
+    return 0
+  fi
+  while true; do
+    pods="$(list_pods)"
+    if [[ -n "${pods//[[:space:]]/}" ]] && [[ "$(wc -w <<< "$pods")" -ge "$desired" ]]; then
+      break
+    fi
+    attempt=$((attempt + 1))
+    if [[ "$attempt" -ge 30 ]]; then
+      echo "Timed out waiting for pods to reach desired replica count ($desired)." >&2
+      return 1
+    fi
+    sleep 2
+  done
+
+  if ! kubectl -n "$NAMESPACE" wait --for=condition=Ready pod $pods --timeout=3m; then
+    return 1
+  fi
+}
+
 switch_tx_mode() {
   local mode=$1
 
@@ -226,7 +257,7 @@ switch_tx_mode() {
     dump_rollout_diagnostics
     return 1
   fi
-  if ! kubectl -n "$NAMESPACE" wait --for=condition=Ready pod -l "$LABEL_SELECTOR" --timeout=3m; then
+  if ! wait_for_ready_pods; then
     dump_rollout_diagnostics
     return 1
   fi
