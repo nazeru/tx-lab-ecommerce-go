@@ -1,11 +1,11 @@
 .PHONY: \
   help \
   kind-create kind-delete kind-context \
-  k8s-apply-order k8s-delete \
   docker-build kind-load \
-  docker-build-order kind-load-order k8s-apply-order-service migrate-order \
-  logs-order pf-order \
-  not-implemented
+  helm-install helm-uninstall \
+  migrate \
+  cli-run bench \
+  logs-order pf-order
 
 # ----------------------------
 # Project settings
@@ -18,11 +18,8 @@ NS ?= txlab
 REGISTRY ?=
 TAG ?= latest
 
-# Services list (future-ready)
-SERVICES := order-service payment-service inventory-service shipping-service notification-service
-
-# For now only order-service is implemented/deployed
-IMPLEMENTED := order-service
+# Services list
+SERVICES := order-service payment-service inventory-service shipping-service notification-service cli
 
 # K8s naming: keep consistent and explicit
 ORDER_DEPLOY := order
@@ -63,51 +60,39 @@ kind-context:
 	kubectl cluster-info || true
 
 # ----------------------------
-# Docker build/load (generic, future-ready)
-# Currently only builds/loads IMPLEMENTED services to avoid confusion.
+# Docker build/load
 # ----------------------------
 docker-build:
-	@for svc in $(IMPLEMENTED); do \
+	@for svc in $(SERVICES); do \
 		echo "Building $$svc..."; \
 		docker build --build-arg SERVICE=$$svc -t $(PROJECT)/$$svc:$(TAG) . ; \
 	done
 
 kind-load:
-	@for svc in $(IMPLEMENTED); do \
+	@for svc in $(SERVICES); do \
 		echo "Loading $$svc into kind cluster $(KIND_CLUSTER)..."; \
 		kind load docker-image $(PROJECT)/$$svc:$(TAG) --name $(KIND_CLUSTER); \
 	done
 
-# ----------------------------
-# order-service concrete targets
-# ----------------------------
-docker-build-order:
-	docker build --build-arg SERVICE=order-service -t $(PROJECT)/order-service:$(TAG) .
+helm-install:
+	helm upgrade --install $(PROJECT) deploy/helm/txlab --namespace $(NS) --create-namespace \
+		--set image.repository=$(PROJECT) --set image.tag=$(TAG)
 
-kind-load-order:
-	kind load docker-image $(PROJECT)/order-service:$(TAG) --name $(KIND_CLUSTER)
+helm-uninstall:
+	helm uninstall $(PROJECT) --namespace $(NS) || true
 
-# Apply minimal k8s manifests for ONLY Postgres + order-service
-# (You keep deploy/k8s/order-service.yaml as the single source)
-k8s-apply-order-service:
-	kubectl apply -f deploy/k8s/order-service.yaml
+migrate:
+	@echo "Apply SQL migrations inside each Postgres pod." 
+	@echo "Use kubectl exec into the postgres pods and run /tmp/*.sql from deploy/sql."
 
-k8s-delete:
-	kubectl delete ns $(NS) --ignore-not-found=true
+cli-run:
+	go run ./cmd/cli
 
-migrate-order:
-	kubectl cp deploy/sql/order.sql $(NS)/postgres-0:/tmp/order.sql
-	kubectl exec -n $(NS) postgres-0 -- sh -c "psql -U postgres -d orderdb -v ON_ERROR_STOP=1 -f /tmp/order.sql"
+bench:
+	go run ./cmd/cli -run bench -mode twopc
 
 logs-order:
 	kubectl logs -n $(NS) deploy/$(ORDER_DEPLOY) --tail=200 -f
 
 pf-order:
 	kubectl port-forward -n $(NS) svc/$(ORDER_SVC) 8080:8080
-
-# ----------------------------
-# Explicit stubs for other services (so Makefile is for whole project)
-# ----------------------------
-not-implemented:
-	@echo "This target is a placeholder. Only order-service is implemented right now."
-	@exit 0

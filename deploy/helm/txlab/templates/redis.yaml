@@ -1,0 +1,34 @@
+{{- if .Values.redis.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "txlab.fullname" . }}-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ include "txlab.fullname" . }}-redis
+  template:
+    metadata:
+      labels:
+        app: {{ include "txlab.fullname" . }}-redis
+    spec:
+      containers:
+        - name: redis
+          image: {{ .Values.redis.image }}
+          ports:
+            - containerPort: 6379
+              name: redis
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "txlab.fullname" . }}-redis
+spec:
+  ports:
+    - port: 6379
+      targetPort: redis
+      name: redis
+  selector:
+    app: {{ include "txlab.fullname" . }}-redis
+{{- end }}

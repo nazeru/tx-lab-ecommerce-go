@@ -1,0 +1,53 @@
+{{- $root := . -}}
+{{- range $svc, $cfg := .Values.services }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "txlab.fullname" $root }}-{{ $svc }}
+spec:
+  replicas: {{ $root.Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "txlab.fullname" $root }}-{{ $svc }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "txlab.fullname" $root }}-{{ $svc }}
+    spec:
+      containers:
+        - name: {{ $svc }}
+          image: {{ $root.Values.image.repository }}/{{ $svc }}:{{ $root.Values.image.tag }}
+          env:
+            - name: PORT
+              value: "{{ $cfg.port }}"
+            - name: KAFKA_BROKERS
+              value: {{ include "txlab.fullname" $root }}-kafka:9092
+            - name: DATABASE_URL
+              value: postgres://{{ $root.Values.postgres.user }}:{{ $root.Values.postgres.password }}@{{ include "txlab.fullname" $root }}-postgres-{{ trimSuffix "-service" $svc }}/{{ index $root.Values.postgres.databases (trimSuffix "-service" $svc) }}?sslmode=disable
+            - name: TX_MODE
+              value: "twopc"
+            {{- if eq $svc "order-service" }}
+            - name: INVENTORY_BASE_URL
+              value: http://{{ include "txlab.fullname" $root }}-inventory-service:{{ (index $root.Values.services "inventory-service").port }}
+            - name: PAYMENT_BASE_URL
+              value: http://{{ include "txlab.fullname" $root }}-payment-service:{{ (index $root.Values.services "payment-service").port }}
+            - name: SHIPPING_BASE_URL
+              value: http://{{ include "txlab.fullname" $root }}-shipping-service:{{ (index $root.Values.services "shipping-service").port }}
+            {{- end }}
+          ports:
+            - containerPort: {{ $cfg.port }}
+              name: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "txlab.fullname" $root }}-{{ $svc }}
+spec:
+  ports:
+    - port: {{ $cfg.port }}
+      targetPort: http
+      name: http
+  selector:
+    app: {{ include "txlab.fullname" $root }}-{{ $svc }}
+---
+{{- end }}

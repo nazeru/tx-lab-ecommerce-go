@@ -1,0 +1,44 @@
+{{- if .Values.postgres.enabled }}
+{{- range $name, $db := .Values.postgres.databases }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "txlab.fullname" $ }}-postgres-{{ $name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ include "txlab.fullname" $ }}-postgres-{{ $name }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "txlab.fullname" $ }}-postgres-{{ $name }}
+    spec:
+      containers:
+        - name: postgres
+          image: {{ $.Values.postgres.image }}
+          env:
+            - name: POSTGRES_USER
+              value: {{ $.Values.postgres.user }}
+            - name: POSTGRES_PASSWORD
+              value: {{ $.Values.postgres.password }}
+            - name: POSTGRES_DB
+              value: {{ $db }}
+          ports:
+            - containerPort: 5432
+              name: postgres
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "txlab.fullname" $ }}-postgres-{{ $name }}
+spec:
+  ports:
+    - port: 5432
+      targetPort: postgres
+      name: postgres
+  selector:
+    app: {{ include "txlab.fullname" $ }}-postgres-{{ $name }}
+---
+{{- end }}
+{{- end }}

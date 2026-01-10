@@ -1,0 +1,42 @@
+image:
+  repository: tx-lab-ecommerce-go
+  tag: latest
+
+replicaCount: 1
+
+kafka:
+  enabled: true
+  image: redpandadata/redpanda:v23.2.15
+  servicePort: 9092
+
+redis:
+  enabled: true
+  image: redis:7-alpine
+  servicePort: 6379
+
+postgres:
+  enabled: true
+  image: postgres:16-alpine
+  user: postgres
+  password: postgres
+  databases:
+    order: orderdb
+    inventory: inventorydb
+    payment: paymentdb
+    shipping: shippingdb
+    notification: notificationdb
+
+services:
+  order-service:
+    port: 8080
+  inventory-service:
+    port: 8080
+  payment-service:
+    port: 8080
+  shipping-service:
+    port: 8080
+  notification-service:
+    port: 8080
+
+metricsServer:
+  enabled: false

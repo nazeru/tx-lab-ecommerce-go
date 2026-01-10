@@ -31,4 +31,30 @@ CREATE TABLE IF NOT EXISTS shipments (
 CREATE INDEX IF NOT EXISTS idx_shipments_order_id ON shipments(order_id);
 CREATE INDEX IF NOT EXISTS idx_shipments_status   ON shipments(status);
 
+-- TCC operations
+CREATE TABLE IF NOT EXISTS tcc_operations (
+  txid        TEXT PRIMARY KEY,
+  order_id    TEXT NOT NULL,
+  step        TEXT NOT NULL,
+  status      TEXT NOT NULL CHECK (status IN ('TRY','CONFIRM','CANCEL')),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Outbox / inbox for Kafka delivery
+CREATE TABLE IF NOT EXISTS outbox (
+  id         BIGSERIAL PRIMARY KEY,
+  event_id   TEXT NOT NULL UNIQUE,
+  topic      TEXT NOT NULL,
+  key        TEXT NOT NULL,
+  payload    JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  sent_at    TIMESTAMPTZ NULL
+);
+
+CREATE TABLE IF NOT EXISTS inbox (
+  event_id    TEXT PRIMARY KEY,
+  received_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 COMMIT;
