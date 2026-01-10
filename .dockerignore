@@ -1,0 +1,7 @@
+.git
+bin
+results
+**/*.tar.gz
+**/*.zip
+**/.DS_Store
+**/node_modules
