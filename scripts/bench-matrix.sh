@@ -627,8 +627,11 @@ run_bench_json_with_retry() {
   local attempt
   for attempt in 1 2; do
     if bench_json="$(run_bench_json "$base_url" "$tx" "$conc" "$log_file")"; then
-      printf '%s' "$bench_json"
-      return 0
+      if [[ -n "${bench_json//[[:space:]]/}" ]]; then
+        printf '%s' "$bench_json"
+        return 0
+      fi
+      log "bench-runner returned empty JSON payload; see $log_file"
     fi
     if [[ "$MANAGE_ORDER_PF" == "1" ]]; then
       log "bench-runner failed (attempt $attempt); restarting port-forward and retrying once"
@@ -739,6 +742,9 @@ for mode in "${TX_MODES[@]}"; do
             bench_log="${BENCH_LOG_DIR}/bench-${timestamp}-${mode}-${profile}-r${replicas}-tx${tx}.log"
             if ! bench_json="$(run_bench_json_with_retry "$BENCH_BASE_URL" "$tx" "$CONCURRENCY" "$bench_log")"; then
               die "bench-runner failed after retry; see $bench_log"
+            fi
+            if [[ -z "${bench_json//[[:space:]]/}" ]]; then
+              die "bench-runner returned empty JSON after retry; see $bench_log"
             fi
 
             net_after_rx="$(sum_net_bytes rx)"
