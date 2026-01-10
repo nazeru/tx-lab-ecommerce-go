@@ -9,7 +9,7 @@
   kind-up kind-down \
   deps fmt test test-race \
   run-order run-cli \
-  logs-order pf-order
+  logs-order pf-order pf-all
 
 # ----------------------------
 # Project settings
@@ -60,6 +60,7 @@ help:
 	@echo "  migrate-order          Apply SQL migration for orderdb"
 	@echo "  logs-order             Tail logs of order-service"
 	@echo "  pf-order               Port-forward order-service to localhost:8080"
+	@echo "  pf-all                 Port-forward all services to localhost ports"
 	@echo ""
 	@echo "Future-ready (stubs):"
 	@echo "  docker-build           Build images for all services (only order is active now)"
@@ -150,3 +151,6 @@ logs-order:
 
 pf-order:
 	kubectl port-forward -n $(NS) svc/$(ORDER_SVC) 8080:8080
+
+pf-all:
+	NS=$(NS) RELEASE=$(PROJECT) scripts/port-forward-all.sh

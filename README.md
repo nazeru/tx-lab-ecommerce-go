@@ -24,6 +24,12 @@ make kind-up
 make migrate-all
 ```
 
+Пробросить порты всех сервисов на localhost:
+
+```bash
+make pf-all
+```
+
 Миграции вручную (по месту, через kubectl exec в каждый postgres pod):
 
 ```bash
