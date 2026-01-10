@@ -24,7 +24,7 @@ make kind-up
 make migrate-all
 ```
 
-Пробросить порты всех сервисов на localhost:
+Пробросить порты всех сервисов и Postgres на localhost:
 
 ```bash
 make pf-all

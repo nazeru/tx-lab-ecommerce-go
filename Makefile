@@ -60,7 +60,7 @@ help:
 	@echo "  migrate-order          Apply SQL migration for orderdb"
 	@echo "  logs-order             Tail logs of order-service"
 	@echo "  pf-order               Port-forward order-service to localhost:8080"
-	@echo "  pf-all                 Port-forward all services to localhost ports"
+	@echo "  pf-all                 Port-forward all services and Postgres to localhost ports"
 	@echo ""
 	@echo "Future-ready (stubs):"
 	@echo "  docker-build           Build images for all services (only order is active now)"
