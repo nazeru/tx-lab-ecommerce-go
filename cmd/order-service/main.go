@@ -131,6 +131,37 @@ func main() {
 		srvMetrics.Requests.WithLabelValues("health", "200").Inc()
 		srvMetrics.LatencyMS.WithLabelValues("health").Observe(float64(time.Since(start).Milliseconds()))
 	})
+	mux.HandleFunc("/orders/", func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		if r.Method != http.MethodGet {
+			srvMetrics.Requests.WithLabelValues("orders", "405").Inc()
+			srvMetrics.LatencyMS.WithLabelValues("orders").Observe(float64(time.Since(start).Milliseconds()))
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		orderID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/orders/"))
+		if orderID == "" {
+			srvMetrics.Requests.WithLabelValues("orders", "400").Inc()
+			srvMetrics.LatencyMS.WithLabelValues("orders").Observe(float64(time.Since(start).Milliseconds()))
+			http.Error(w, "order id required", http.StatusBadRequest)
+			return
+		}
+		var status string
+		var updatedAt time.Time
+		if err := pool.QueryRow(r.Context(), `SELECT status, updated_at FROM orders WHERE id=$1`, orderID).Scan(&status, &updatedAt); err != nil {
+			srvMetrics.Requests.WithLabelValues("orders", "404").Inc()
+			srvMetrics.LatencyMS.WithLabelValues("orders").Observe(float64(time.Since(start).Milliseconds()))
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"order_id":   orderID,
+			"status":     status,
+			"updated_at": updatedAt.UTC().Format(time.RFC3339),
+		})
+		srvMetrics.Requests.WithLabelValues("orders", "200").Inc()
+		srvMetrics.LatencyMS.WithLabelValues("orders").Observe(float64(time.Since(start).Milliseconds()))
+	})
 	mux.Handle("/metrics", metrics.Handler())
 	mux.HandleFunc("/checkout", func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -236,8 +267,8 @@ func main() {
 					Status:     "rejected",
 					DurationMS: time.Since(start).Milliseconds(),
 				})
-				writeJSON(w, http.StatusBadGateway, CheckoutResponse{OrderID: orderID, TxID: txid, Status: "REJECTED"})
-				srvMetrics.Requests.WithLabelValues("checkout", "502").Inc()
+				writeJSON(w, http.StatusConflict, CheckoutResponse{OrderID: orderID, TxID: txid, Status: "REJECTED"})
+				srvMetrics.Requests.WithLabelValues("checkout", "409").Inc()
 				srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
 				return
 			}
@@ -266,8 +297,8 @@ func main() {
 					Status:     "rejected",
 					DurationMS: time.Since(start).Milliseconds(),
 				})
-				writeJSON(w, http.StatusBadGateway, CheckoutResponse{OrderID: orderID, TxID: txid, Status: "REJECTED"})
-				srvMetrics.Requests.WithLabelValues("checkout", "502").Inc()
+				writeJSON(w, http.StatusConflict, CheckoutResponse{OrderID: orderID, TxID: txid, Status: "REJECTED"})
+				srvMetrics.Requests.WithLabelValues("checkout", "409").Inc()
 				srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
 				return
 			}
@@ -352,8 +383,8 @@ func main() {
 				Status:     "aborted",
 				DurationMS: time.Since(start).Milliseconds(),
 			})
-			writeJSON(w, http.StatusBadGateway, CheckoutResponse{OrderID: orderID, TxID: txid, Status: "ABORTED"})
-			srvMetrics.Requests.WithLabelValues("checkout", "502").Inc()
+			writeJSON(w, http.StatusConflict, CheckoutResponse{OrderID: orderID, TxID: txid, Status: "ABORTED"})
+			srvMetrics.Requests.WithLabelValues("checkout", "409").Inc()
 			srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
 			return
 		}
@@ -373,8 +404,8 @@ func main() {
 					Status:     "abort_after_commit_fail",
 					DurationMS: time.Since(start).Milliseconds(),
 				})
-				writeJSON(w, http.StatusBadGateway, CheckoutResponse{OrderID: orderID, TxID: txid, Status: "ABORTED"})
-				srvMetrics.Requests.WithLabelValues("checkout", "502").Inc()
+				writeJSON(w, http.StatusConflict, CheckoutResponse{OrderID: orderID, TxID: txid, Status: "ABORTED"})
+				srvMetrics.Requests.WithLabelValues("checkout", "409").Inc()
 				srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
 				return
 			}

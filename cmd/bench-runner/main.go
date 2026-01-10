@@ -7,8 +7,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +24,7 @@ type benchResult struct {
 	BaseURL            string         `json:"base_url"`
 	Scenario           string         `json:"scenario"`
 	Transactions       int            `json:"transactions"`
+	Concurrency        int            `json:"concurrency"`
 	OperationsPerTx    int            `json:"operations_per_transaction"`
 	TotalRequests      int            `json:"total_requests"`
 	TotalOperations    int            `json:"total_operations"`
@@ -31,9 +34,21 @@ type benchResult struct {
 	AvgLatencyMs       float64        `json:"avg_latency_ms"`
 	MinLatencyMs       float64        `json:"min_latency_ms"`
 	MaxLatencyMs       float64        `json:"max_latency_ms"`
+	P50LatencyMs       float64        `json:"p50_latency_ms"`
+	P90LatencyMs       float64        `json:"p90_latency_ms"`
+	P95LatencyMs       float64        `json:"p95_latency_ms"`
+	P99LatencyMs       float64        `json:"p99_latency_ms"`
 	ThroughputRPS      float64        `json:"throughput_rps"`
 	StatusCounts       map[string]int `json:"status_counts"`
+	ErrorClasses       map[string]int `json:"error_classes"`
 	FirstError         string         `json:"first_error"`
+	FinalizedRequests  int            `json:"finalized_requests"`
+	FinalTimeouts      int            `json:"final_timeouts"`
+	FinalAvgLatencyMs  float64        `json:"final_avg_latency_ms"`
+	FinalP50LatencyMs  float64        `json:"final_p50_latency_ms"`
+	FinalP90LatencyMs  float64        `json:"final_p90_latency_ms"`
+	FinalP95LatencyMs  float64        `json:"final_p95_latency_ms"`
+	FinalP99LatencyMs  float64        `json:"final_p99_latency_ms"`
 }
 
 type operation struct {
@@ -49,12 +64,19 @@ type metrics struct {
 	total        time.Duration
 	minLatency   time.Duration
 	maxLatency   time.Duration
+	latenciesMs  []float64
+	finalMs      []float64
+	finalTimeout int
 	statusCounts map[string]int
+	errorClasses map[string]int
 	firstError   string
 }
 
 func newMetrics() *metrics {
-	return &metrics{statusCounts: make(map[string]int)}
+	return &metrics{
+		statusCounts: make(map[string]int),
+		errorClasses: make(map[string]int),
+	}
 }
 
 func (m *metrics) recordTransaction(latency time.Duration, err error) {
@@ -72,12 +94,26 @@ func (m *metrics) recordTransaction(latency time.Duration, err error) {
 	if latency > m.maxLatency {
 		m.maxLatency = latency
 	}
+	m.latenciesMs = append(m.latenciesMs, float64(latency.Milliseconds()))
 }
 
-func (m *metrics) recordStatus(status int, err error) {
+func (m *metrics) recordFinal(latency time.Duration, reached bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !reached {
+		m.finalTimeout++
+		return
+	}
+	m.finalMs = append(m.finalMs, float64(latency.Milliseconds()))
+}
+
+func (m *metrics) recordStatus(status int, err error, class string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.statusCounts[strconv.Itoa(status)]++
+	if class != "" {
+		m.errorClasses[class]++
+	}
 	if err != nil && m.firstError == "" {
 		m.firstError = err.Error()
 	}
@@ -92,6 +128,10 @@ func main() {
 	total := flag.Int("total", 1000, "total number of transactions")
 	concurrency := flag.Int("concurrency", 10, "number of concurrent workers")
 	timeout := flag.Duration("timeout", 10*time.Second, "per-request timeout")
+	awaitFinal := flag.Bool("await-final", false, "wait for final order status after /checkout (checkout scenario only)")
+	finalTimeout := flag.Duration("final-timeout", 30*time.Second, "timeout for final status polling")
+	finalInterval := flag.Duration("final-interval", 500*time.Millisecond, "poll interval for final status")
+	finalStatuses := flag.String("final-statuses", "CONFIRMED,COMMITTED", "comma-separated list of final order statuses")
 	output := flag.String("output", "", "optional output path for JSON result")
 	flag.Parse()
 
@@ -114,6 +154,7 @@ func main() {
 	var wg sync.WaitGroup
 	m := newMetrics()
 	client := &http.Client{}
+	finalStatusSet := parseFinalStatuses(*finalStatuses)
 
 	start := time.Now()
 	for i := 0; i < *concurrency; i++ {
@@ -123,7 +164,7 @@ func main() {
 			for range tasks {
 				txid := uuid.NewString()
 				orderID := uuid.NewString()
-				latency, err := runTransaction(ops, txid, orderID, client, *timeout, m)
+				latency, err := runTransaction(ops, txid, orderID, client, *timeout, *awaitFinal, *finalTimeout, *finalInterval, *baseURL, finalStatusSet, m)
 				m.recordTransaction(latency, err)
 			}
 		}()
@@ -144,12 +185,15 @@ func main() {
 		minLatency = float64(m.minLatency.Milliseconds())
 		maxLatency = float64(m.maxLatency.Milliseconds())
 	}
+	p50, p90, p95, p99 := calcPercentiles(m.latenciesMs)
+	finalAvg, finalP50, finalP90, finalP95, finalP99 := calcFinalPercentiles(m.finalMs)
 
 	result := benchResult{
 		Timestamp:          time.Now().UTC().Format(time.RFC3339),
 		BaseURL:            *baseURL,
 		Scenario:           *scenario,
 		Transactions:       *total,
+		Concurrency:        *concurrency,
 		OperationsPerTx:    len(ops),
 		TotalRequests:      *total,
 		TotalOperations:    *total * len(ops),
@@ -159,9 +203,21 @@ func main() {
 		AvgLatencyMs:       avgLatency,
 		MinLatencyMs:       minLatency,
 		MaxLatencyMs:       maxLatency,
+		P50LatencyMs:       p50,
+		P90LatencyMs:       p90,
+		P95LatencyMs:       p95,
+		P99LatencyMs:       p99,
 		ThroughputRPS:      float64(m.success) / duration.Seconds(),
 		StatusCounts:       m.statusCounts,
+		ErrorClasses:       m.errorClasses,
 		FirstError:         m.firstError,
+		FinalizedRequests:  len(m.finalMs),
+		FinalTimeouts:      m.finalTimeout,
+		FinalAvgLatencyMs:  finalAvg,
+		FinalP50LatencyMs:  finalP50,
+		FinalP90LatencyMs:  finalP90,
+		FinalP95LatencyMs:  finalP95,
+		FinalP99LatencyMs:  finalP99,
 	}
 
 	encoder := json.NewEncoder(os.Stdout)
@@ -346,38 +402,64 @@ func buildOperations(scenario, orderURL, inventoryURL, paymentURL, shippingURL s
 	return ops, nil
 }
 
-func runTransaction(ops []operation, txid, orderID string, client *http.Client, timeout time.Duration, m *metrics) (time.Duration, error) {
+func runTransaction(ops []operation, txid, orderID string, client *http.Client, timeout time.Duration, awaitFinal bool, finalTimeout, finalInterval time.Duration, baseURL string, finalStatusSet map[string]struct{}, m *metrics) (time.Duration, error) {
 	start := time.Now()
+	var checkoutOrderID string
+	var checkoutStatus string
 	for _, op := range ops {
-		status, err := doCheckout(op.url, op.payload(txid, orderID), client, timeout)
-		m.recordStatus(status, err)
+		info, class, err := doCheckout(op.url, op.payload(txid, orderID), client, timeout)
+		m.recordStatus(info.StatusCode, err, class)
 		if err != nil {
 			return time.Since(start), fmt.Errorf("%s: %w", op.name, err)
 		}
+		if op.name == "checkout" {
+			checkoutOrderID = info.OrderID
+			checkoutStatus = info.OrderStatus
+		}
+	}
+	if awaitFinal && len(ops) == 1 && ops[0].name == "checkout" && checkoutOrderID != "" {
+		finalLatency, reached := waitForFinalStatus(client, baseURL, checkoutOrderID, checkoutStatus, finalStatusSet, finalTimeout, finalInterval)
+		m.recordFinal(finalLatency, reached)
 	}
 	return time.Since(start), nil
 }
 
-func doCheckout(url string, payload any, client *http.Client, timeout time.Duration) (int, error) {
+type responseInfo struct {
+	StatusCode  int
+	Body        string
+	OrderID     string
+	OrderStatus string
+}
+
+func doCheckout(url string, payload any, client *http.Client, timeout time.Duration) (responseInfo, string, error) {
 	data, _ := json.Marshal(payload)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
 	if err != nil {
-		return 0, err
+		return responseInfo{}, "transport", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", uuid.NewString())
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, err
+		return responseInfo{StatusCode: 0}, "transport", err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return resp.StatusCode, fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	bodyStr := strings.TrimSpace(string(body))
+	orderID, status := parseCheckoutBody(bodyStr)
+	info := responseInfo{
+		StatusCode:  resp.StatusCode,
+		Body:        bodyStr,
+		OrderID:     orderID,
+		OrderStatus: status,
 	}
-	return resp.StatusCode, nil
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		class := classifyError(resp.StatusCode, bodyStr)
+		return info, class, fmt.Errorf("status %d: %s", resp.StatusCode, bodyStr)
+	}
+	return info, "", nil
 }
 
 func writeJSON(path string, result benchResult) error {
@@ -394,4 +476,142 @@ func getenv(key, def string) string {
 		return def
 	}
 	return v
+}
+
+func classifyError(status int, body string) string {
+	if isBusinessRejection(body) {
+		return "business_rejected"
+	}
+	switch {
+	case status >= 500:
+		return "http_5xx"
+	case status >= 400:
+		return "http_4xx"
+	default:
+		return ""
+	}
+}
+
+func isBusinessRejection(body string) bool {
+	if body == "" {
+		return false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		return false
+	}
+	status, _ := payload["status"].(string)
+	status = strings.ToUpper(strings.TrimSpace(status))
+	return status == "REJECTED" || status == "ABORTED"
+}
+
+func parseCheckoutBody(body string) (string, string) {
+	if body == "" {
+		return "", ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		return "", ""
+	}
+	orderID, _ := payload["order_id"].(string)
+	status, _ := payload["status"].(string)
+	return orderID, status
+}
+
+func parseFinalStatuses(input string) map[string]struct{} {
+	result := map[string]struct{}{}
+	for _, part := range strings.Split(input, ",") {
+		name := strings.ToUpper(strings.TrimSpace(part))
+		if name == "" {
+			continue
+		}
+		result[name] = struct{}{}
+	}
+	return result
+}
+
+func waitForFinalStatus(client *http.Client, baseURL, orderID, initialStatus string, finals map[string]struct{}, timeout, interval time.Duration) (time.Duration, bool) {
+	start := time.Now()
+	initialStatus = strings.ToUpper(strings.TrimSpace(initialStatus))
+	if _, ok := finals[initialStatus]; ok {
+		return time.Since(start), true
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		status, err := fetchOrderStatus(client, baseURL, orderID)
+		if err == nil {
+			status = strings.ToUpper(strings.TrimSpace(status))
+			if _, ok := finals[status]; ok {
+				return time.Since(start), true
+			}
+		}
+		time.Sleep(interval)
+	}
+	return time.Since(start), false
+}
+
+func fetchOrderStatus(client *http.Client, baseURL, orderID string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	url := strings.TrimRight(baseURL, "/") + "/orders/" + orderID
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("status %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", err
+	}
+	status, _ := payload["status"].(string)
+	return status, nil
+}
+
+func calcPercentiles(values []float64) (float64, float64, float64, float64) {
+	if len(values) == 0 {
+		return 0, 0, 0, 0
+	}
+	sort.Float64s(values)
+	return percentile(values, 0.50), percentile(values, 0.90), percentile(values, 0.95), percentile(values, 0.99)
+}
+
+func calcFinalPercentiles(values []float64) (float64, float64, float64, float64, float64) {
+	if len(values) == 0 {
+		return 0, 0, 0, 0, 0
+	}
+	sort.Float64s(values)
+	avg := 0.0
+	for _, v := range values {
+		avg += v
+	}
+	avg = avg / float64(len(values))
+	return avg, percentile(values, 0.50), percentile(values, 0.90), percentile(values, 0.95), percentile(values, 0.99)
+}
+
+func percentile(sorted []float64, p float64) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	if p <= 0 {
+		return sorted[0]
+	}
+	if p >= 1 {
+		return sorted[len(sorted)-1]
+	}
+	rank := int(math.Ceil(p*float64(len(sorted)))) - 1
+	if rank < 0 {
+		rank = 0
+	}
+	if rank >= len(sorted) {
+		rank = len(sorted) - 1
+	}
+	return sorted[rank]
 }
