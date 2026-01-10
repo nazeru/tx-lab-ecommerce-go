@@ -500,6 +500,11 @@ apply_tc_cmd() {
   kubectl exec -n "$NAMESPACE" "$pod" -- "$@" >/dev/null 2>&1 || true
 }
 
+pod_has_tc() {
+  local pod="$1"
+  kubectl exec -n "$NAMESPACE" "$pod" -- sh -c "command -v tc >/dev/null 2>&1" >/dev/null 2>&1
+}
+
 apply_netem_profile() {
   local profile="$1"
   local delay_ms="$2"
@@ -511,6 +516,10 @@ apply_netem_profile() {
     selector="$(trim "$selector")"
     [[ -n "${selector//[[:space:]]/}" ]] || continue
     for pod in $(list_pods_for "$selector"); do
+      if ! pod_has_tc "$pod"; then
+        log "WARNING: tc not found in pod $pod (selector=$selector); skipping netem"
+        continue
+      fi
       apply_tc_cmd "$pod" tc qdisc del dev eth0 root
 
       case "$profile" in
@@ -550,6 +559,10 @@ clear_netem() {
     selector="$(trim "$selector")"
     [[ -n "${selector//[[:space:]]/}" ]] || continue
     for pod in $(list_pods_for "$selector"); do
+      if ! pod_has_tc "$pod"; then
+        log "WARNING: tc not found in pod $pod (selector=$selector); skipping netem clear"
+        continue
+      fi
       apply_tc_cmd "$pod" tc qdisc del dev eth0 root
     done
   done
@@ -595,6 +608,11 @@ capture_netem_state() {
       echo "selector=$selector"
       for pod in $(list_pods_for "$selector"); do
         echo "pod=$pod"
+        if ! pod_has_tc "$pod"; then
+          echo "tc not found in pod; skipping tc qdisc inspection"
+          echo "---"
+          continue
+        fi
         kubectl exec -n "$NAMESPACE" "$pod" -- tc qdisc show dev eth0 || true
         kubectl exec -n "$NAMESPACE" "$pod" -- tc -s qdisc show dev eth0 || true
         echo "---"
