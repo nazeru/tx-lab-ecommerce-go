@@ -87,6 +87,7 @@ run-order:
 	INVENTORY_BASE_URL=$(INVENTORY_BASE_URL) \
 	PAYMENT_BASE_URL=$(PAYMENT_BASE_URL) \
 	SHIPPING_BASE_URL=$(SHIPPING_BASE_URL) \
+	MOCK_2PC=false \
 	go run ./cmd/order-service
 
 run-cli:
