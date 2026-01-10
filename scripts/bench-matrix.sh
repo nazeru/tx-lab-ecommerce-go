@@ -92,6 +92,7 @@ FINAL_STATUSES="$(trim "${FINAL_STATUSES:-CONFIRMED,COMMITTED}")"
 NETEM_TARGET_SELECTORS_STR="$(trim "${NETEM_TARGET_SELECTORS:-}")"
 NETEM_VALIDATE="$(trim "${NETEM_VALIDATE:-1}")"
 NETEM_VALIDATE_LOG_DIR="$(trim "${NETEM_VALIDATE_LOG_DIR:-${RESULTS_DIR}/netem-validate}")"
+NETEM_REQUIRE_TC="$(trim "${NETEM_REQUIRE_TC:-1}")"
 PROBE_SERVICES_STR="$(trim "${PROBE_SERVICES:-}")"
 PROBE_IMAGE="$(trim "${PROBE_IMAGE:-busybox:1.36}")"
 
@@ -505,6 +506,19 @@ pod_has_tc() {
   kubectl exec -n "$NAMESPACE" "$pod" -- sh -c "command -v tc >/dev/null 2>&1" >/dev/null 2>&1
 }
 
+ensure_tc_or_warn() {
+  local pod="$1"
+  local selector="$2"
+  if pod_has_tc "$pod"; then
+    return 0
+  fi
+  if [[ "$NETEM_REQUIRE_TC" == "1" ]]; then
+    die "tc not found in pod $pod (selector=$selector); set NETEM_REQUIRE_TC=0 to skip netem for this pod"
+  fi
+  log "WARNING: tc not found in pod $pod (selector=$selector); skipping netem"
+  return 1
+}
+
 apply_netem_profile() {
   local profile="$1"
   local delay_ms="$2"
@@ -516,8 +530,7 @@ apply_netem_profile() {
     selector="$(trim "$selector")"
     [[ -n "${selector//[[:space:]]/}" ]] || continue
     for pod in $(list_pods_for "$selector"); do
-      if ! pod_has_tc "$pod"; then
-        log "WARNING: tc not found in pod $pod (selector=$selector); skipping netem"
+      if ! ensure_tc_or_warn "$pod" "$selector"; then
         continue
       fi
       apply_tc_cmd "$pod" tc qdisc del dev eth0 root
@@ -559,8 +572,7 @@ clear_netem() {
     selector="$(trim "$selector")"
     [[ -n "${selector//[[:space:]]/}" ]] || continue
     for pod in $(list_pods_for "$selector"); do
-      if ! pod_has_tc "$pod"; then
-        log "WARNING: tc not found in pod $pod (selector=$selector); skipping netem clear"
+      if ! ensure_tc_or_warn "$pod" "$selector"; then
         continue
       fi
       apply_tc_cmd "$pod" tc qdisc del dev eth0 root
@@ -608,7 +620,7 @@ capture_netem_state() {
       echo "selector=$selector"
       for pod in $(list_pods_for "$selector"); do
         echo "pod=$pod"
-        if ! pod_has_tc "$pod"; then
+        if ! ensure_tc_or_warn "$pod" "$selector"; then
           echo "tc not found in pod; skipping tc qdisc inspection"
           echo "---"
           continue
