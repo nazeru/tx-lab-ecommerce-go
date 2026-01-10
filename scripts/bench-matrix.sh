@@ -5,8 +5,12 @@ NAMESPACE=${NAMESPACE:-txlab}
 DEPLOYMENT=${DEPLOYMENT:-order}
 APP_LABEL=${APP_LABEL:-order}
 ORDER_BASE_URL=${ORDER_BASE_URL:-http://localhost:8080}
+INVENTORY_BASE_URL=${INVENTORY_BASE_URL:-}
+PAYMENT_BASE_URL=${PAYMENT_BASE_URL:-}
+SHIPPING_BASE_URL=${SHIPPING_BASE_URL:-}
 RESULTS_DIR=${RESULTS_DIR:-results}
 CONCURRENCY=${CONCURRENCY:-10}
+BENCH_SCENARIO=${BENCH_SCENARIO:-all}
 
 REPLICAS_LIST=(1 3 5 7 10)
 TX_COUNTS=(500 1000 5000 10000 20000)
@@ -25,6 +29,7 @@ cat <<HEADER > "$md_file"
 * Namespace: $NAMESPACE
 * Deployment: $DEPLOYMENT
 * Base URL: $ORDER_BASE_URL
+* Scenario: $BENCH_SCENARIO
 * Concurrency: $CONCURRENCY
 
 | Replicas | Transactions | Latency (ms) | Jitter (ms) | Avg latency (ms) | Throughput (rps) | Errors | CPU (m) | Memory (Mi) | Net RX (KB/s) | Net TX (KB/s) |
@@ -97,7 +102,21 @@ for replicas in "${REPLICAS_LIST[@]}"; do
         net_before_rx=$(sum_net_bytes rx)
         net_before_tx=$(sum_net_bytes tx)
 
-        bench_json=$(go run ./cmd/bench-runner -base-url "$ORDER_BASE_URL" -total "$tx" -concurrency "$CONCURRENCY")
+        bench_json=$(go run ./cmd/bench-runner \
+          -base-url "$ORDER_BASE_URL" \
+          -inventory-url "$INVENTORY_BASE_URL" \
+          -payment-url "$PAYMENT_BASE_URL" \
+          -shipping-url "$SHIPPING_BASE_URL" \
+          -scenario "$BENCH_SCENARIO" \
+          -total "$tx" \
+          -concurrency "$CONCURRENCY")
+        bench_json_trimmed=$(printf '%s' "$bench_json" | tr -d '[:space:]')
+        if [[ -z "$bench_json_trimmed" ]]; then
+          echo "bench-runner returned empty output (replicas=$replicas tx=$tx latency=${latency}ms jitter=${jitter}ms)." >&2
+          echo "Check ORDER_BASE_URL=${ORDER_BASE_URL} and that order-service is reachable." >&2
+          clear_netem
+          exit 1
+        fi
 
         net_after_rx=$(sum_net_bytes rx)
         net_after_tx=$(sum_net_bytes tx)
@@ -106,7 +125,13 @@ for replicas in "${REPLICAS_LIST[@]}"; do
 import json
 import sys
 
-data = json.load(sys.stdin)
+raw = sys.stdin.read().strip()
+if not raw:
+    raise SystemExit("bench-runner produced empty output")
+try:
+    data = json.loads(raw)
+except json.JSONDecodeError as exc:
+    raise SystemExit(f"bench-runner produced invalid JSON: {exc}") from exc
 print(
     "{avg:.2f}\t{thr:.2f}\t{err}\t{dur:.4f}".format(
         avg=data.get("avg_latency_ms", 0),
