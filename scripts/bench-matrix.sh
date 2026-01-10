@@ -137,20 +137,30 @@ else
   TX_MODE_DEPLOYMENT="$REAL_TX_MODE_DEPLOYMENT"
 fi
 
-# ----------------------------
-# Derive pod label selector from deployment.spec.selector.matchLabels
-# ----------------------------
-LABEL_SELECTOR="$(
-  kubectl get deploy "$DEPLOYMENT" -n "$NAMESPACE" -o json | "$PYTHON_BIN" -c '
+label_selector_for_deployment() {
+  local deployment=$1
+  kubectl get deploy "$deployment" -n "$NAMESPACE" -o json | "$PYTHON_BIN" -c '
 import json,sys
 d=json.load(sys.stdin)
 ml=(d.get("spec",{}).get("selector",{}) or {}).get("matchLabels") or {}
 # k8s label selector: k=v,k2=v2
 print(",".join([f"{k}={v}" for k,v in ml.items()]))
 '
-)"
+}
+
+# ----------------------------
+# Derive pod label selector from deployment.spec.selector.matchLabels
+# ----------------------------
+LABEL_SELECTOR="$(label_selector_for_deployment "$DEPLOYMENT")"
 if [[ -z "${LABEL_SELECTOR//[[:space:]]/}" ]]; then
   die "cannot derive LABEL_SELECTOR from deployment '$DEPLOYMENT' (.spec.selector.matchLabels is empty)"
+fi
+TX_MODE_LABEL_SELECTOR="$LABEL_SELECTOR"
+if [[ "$TX_MODE_DEPLOYMENT" != "$DEPLOYMENT" ]]; then
+  TX_MODE_LABEL_SELECTOR="$(label_selector_for_deployment "$TX_MODE_DEPLOYMENT")"
+  if [[ -z "${TX_MODE_LABEL_SELECTOR//[[:space:]]/}" ]]; then
+    die "cannot derive TX_MODE_LABEL_SELECTOR from deployment '$TX_MODE_DEPLOYMENT' (.spec.selector.matchLabels is empty)"
+  fi
 fi
 
 # ----------------------------
@@ -174,6 +184,7 @@ cat <<HEADER > "$md_file"
 * Namespace: $NAMESPACE
 * Deployment: $DEPLOYMENT
 * TX mode deployment: $TX_MODE_DEPLOYMENT
+* TX mode selector: $TX_MODE_LABEL_SELECTOR
 * Pod selector: $LABEL_SELECTOR
 * Base URL: $ORDER_BASE_URL
 * Scenario: $BENCH_SCENARIO
@@ -207,34 +218,47 @@ dump_rollout_diagnostics() {
 }
 
 desired_replicas() {
-  kubectl get deployment "$DEPLOYMENT" -n "$NAMESPACE" -o jsonpath='{.spec.replicas}'
+  local deployment=$1
+  kubectl get deployment "$deployment" -n "$NAMESPACE" -o jsonpath='{.spec.replicas}'
 }
 
 wait_for_ready_pods() {
   local desired
-  local pods
   local attempt=0
+  local ready=0
+  local total=0
 
-  desired=$(desired_replicas)
+  desired=$(desired_replicas "$TX_MODE_DEPLOYMENT")
   if [[ "$desired" == "0" ]]; then
     return 0
   fi
+  echo "Waiting for $desired ready pods (selector: $TX_MODE_LABEL_SELECTOR)..." >&2
   while true; do
-    pods="$(list_pods)"
-    if [[ -n "${pods//[[:space:]]/}" ]] && [[ "$(wc -w <<< "$pods")" -ge "$desired" ]]; then
+    read -r ready total <<< "$(
+      kubectl get pods -n "$NAMESPACE" -l "$TX_MODE_LABEL_SELECTOR" -o json | "$PYTHON_BIN" -c '
+import json,sys
+data=json.load(sys.stdin)
+items=[p for p in data.get("items", []) if not p.get("metadata", {}).get("deletionTimestamp")]
+total=len(items)
+ready=0
+for pod in items:
+    for cond in pod.get("status", {}).get("conditions", []) or []:
+        if cond.get("type") == "Ready" and cond.get("status") == "True":
+            ready += 1
+            break
+print(f"{ready} {total}")
+'
+    )"
+    if [[ "$ready" -ge "$desired" ]]; then
       break
     fi
     attempt=$((attempt + 1))
-    if [[ "$attempt" -ge 30 ]]; then
-      echo "Timed out waiting for pods to reach desired replica count ($desired)." >&2
+    if [[ "$attempt" -ge 90 ]]; then
+      echo "Timed out waiting for ready pods ($ready/$desired, total=$total)." >&2
       return 1
     fi
     sleep 2
   done
-
-  if ! kubectl -n "$NAMESPACE" wait --for=condition=Ready pod $pods --timeout=3m; then
-    return 1
-  fi
 }
 
 switch_tx_mode() {
