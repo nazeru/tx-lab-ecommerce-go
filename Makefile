@@ -4,6 +4,7 @@
   docker-build kind-load \
   helm-install helm-uninstall \
   migrate \
+  migrate-all \
   cli-run bench \
   kind-up kind-down \
   deps fmt test test-race \
@@ -52,6 +53,7 @@ help:
 	@echo "  kind-create            Create kind cluster ($(KIND_CLUSTER))"
 	@echo "  kind-delete            Delete kind cluster ($(KIND_CLUSTER))"
 	@echo "  kind-context           Show current kube context"
+	@echo "  migrate-all            Run SQL migrations for all Postgres pods"
 	@echo "  docker-build-order     Build docker image for order-service"
 	@echo "  kind-load-order        Load order-service image into kind"
 	@echo "  k8s-apply-order-service   Apply k8s manifests for Postgres + order-service"
@@ -133,6 +135,9 @@ helm-uninstall:
 migrate:
 	@echo "Apply SQL migrations inside each Postgres pod." 
 	@echo "Use kubectl exec into the postgres pods and run /tmp/*.sql from deploy/sql."
+
+migrate-all:
+	NS=$(NS) RELEASE=$(PROJECT) scripts/migrate-all.sh
 
 cli-run:
 	go run ./cmd/cli

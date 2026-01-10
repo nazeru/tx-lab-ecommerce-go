@@ -16,7 +16,15 @@
 make kind-up
 ```
 
-Миграции (по месту, через kubectl exec в каждый postgres pod):
+Команда поднимает все сервисы через Helm-чарт, а также Kafka/Redis/Postgres в namespace `txlab`.
+
+Миграции всех сервисов:
+
+```bash
+make migrate-all
+```
+
+Миграции вручную (по месту, через kubectl exec в каждый postgres pod):
 
 ```bash
 kubectl exec -it deploy/$(kubectl get deploy -n txlab -o name | grep postgres-order) -n txlab -- sh
