@@ -28,7 +28,7 @@
 
 * Применяет `tc netem` на целевые поды (`NETEM_TARGET_SELECTORS`).
 * Перед каждым прогоном сохраняет вывод `tc qdisc show` и сетевые пробы во внешний лог (`netem_validation_log`).
-* Опционально запускает краткие `ping` из временного pod’а к критическим сервисам (`PROBE_SERVICES`).
+* Опционально запускает краткие `ping` из временного pod’а к критическим сервисам (`PROBE_SERVICES` или `PROBE_SERVICE_HOSTS`).
 
 > ⚠️ Поды должны содержать утилиту `tc` (обычно пакет `iproute2`). По умолчанию отсутствие `tc` считается ошибкой. Чтобы пропустить netem для таких pod’ов и продолжить прогон, установите `NETEM_REQUIRE_TC=0`.
 
@@ -37,6 +37,14 @@
 ```bash
 NETEM_TARGET_SELECTORS="app=order;app=inventory;app=payment;app=shipping" \
 PROBE_SERVICES="order inventory payment shipping" \
+NETEM_VALIDATE=1 \
+./scripts/bench-matrix.sh
+```
+
+Если имена сервисов отличаются (например, Helm префиксы), используйте FQDN или URL напрямую:
+
+```bash
+PROBE_SERVICE_HOSTS="tx-lab-ecommerce-go-txlab-order-service.txlab.svc.cluster.local tx-lab-ecommerce-go-txlab-inventory-service.txlab.svc.cluster.local" \
 NETEM_VALIDATE=1 \
 ./scripts/bench-matrix.sh
 ```

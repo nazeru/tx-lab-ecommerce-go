@@ -94,6 +94,7 @@ NETEM_VALIDATE="$(trim "${NETEM_VALIDATE:-1}")"
 NETEM_VALIDATE_LOG_DIR="$(trim "${NETEM_VALIDATE_LOG_DIR:-${RESULTS_DIR}/netem-validate}")"
 NETEM_REQUIRE_TC="$(trim "${NETEM_REQUIRE_TC:-1}")"
 PROBE_SERVICES_STR="$(trim "${PROBE_SERVICES:-}")"
+PROBE_SERVICE_HOSTS_STR="$(trim "${PROBE_SERVICE_HOSTS:-}")"
 PROBE_IMAGE="$(trim "${PROBE_IMAGE:-busybox:1.36}")"
 
 METRICS_SELECTORS_STR="$(trim "${METRICS_SELECTORS:-}")"
@@ -277,6 +278,12 @@ PROBE_SERVICES=()
 if [[ -n "${PROBE_SERVICES_STR//[[:space:]]/}" ]]; then
   # shellcheck disable=SC2206
   PROBE_SERVICES=($PROBE_SERVICES_STR)
+fi
+
+PROBE_SERVICE_HOSTS=()
+if [[ -n "${PROBE_SERVICE_HOSTS_STR//[[:space:]]/}" ]]; then
+  # shellcheck disable=SC2206
+  PROBE_SERVICE_HOSTS=($PROBE_SERVICE_HOSTS_STR)
 fi
 
 # ----------------------------
@@ -632,15 +639,38 @@ capture_netem_state() {
       echo
     done
 
-    if [[ "${NETEM_VALIDATE}" == "1" && ${#PROBE_SERVICES[@]} -gt 0 ]]; then
-      echo "probe_services=${PROBE_SERVICES[*]}"
+    if [[ "${NETEM_VALIDATE}" == "1" && ( ${#PROBE_SERVICES[@]} -gt 0 || ${#PROBE_SERVICE_HOSTS[@]} -gt 0 ) ]]; then
+      if [[ ${#PROBE_SERVICE_HOSTS[@]} -gt 0 ]]; then
+        echo "probe_service_hosts=${PROBE_SERVICE_HOSTS[*]}"
+      else
+        echo "probe_services=${PROBE_SERVICES[*]}"
+      fi
       probe_name="netem-probe-$(date +%s%N | tail -c 8)"
       kubectl run -n "$NAMESPACE" --rm -i "$probe_name" --restart=Never --image "$PROBE_IMAGE" --command -- sh -c "
 set -e
-for svc in ${PROBE_SERVICES[*]}; do
-  echo \"=== \$svc ===\"
-  ping -c 5 \"\$svc.${NAMESPACE}.svc.cluster.local\" || true
-  wget -qO- --timeout=2 \"http://\$svc.${NAMESPACE}.svc.cluster.local:8080/health\" >/dev/null 2>&1 || true
+if [ ${#PROBE_SERVICE_HOSTS[@]} -gt 0 ]; then
+  targets=\"${PROBE_SERVICE_HOSTS[*]}\"
+else
+  targets=\"\"
+  for svc in ${PROBE_SERVICES[*]}; do
+    targets=\"\$targets \$svc.${NAMESPACE}.svc.cluster.local\"
+  done
+fi
+
+for target in \$targets; do
+  echo \"=== \$target ===\"
+  host=\"\$target\"
+  if echo \"\$host\" | grep -q \"^http\"; then
+    host=\"\${host#http://}\"
+    host=\"\${host#https://}\"
+    host=\"\${host%%/*}\"
+  fi
+  ping -c 5 \"\$host\" || true
+  if echo \"\$target\" | grep -q \"^http\"; then
+    wget -qO- --timeout=2 \"\$target\" >/dev/null 2>&1 || true
+  else
+    wget -qO- --timeout=2 \"http://\$target:8080/health\" >/dev/null 2>&1 || true
+  fi
 done
 " || true
     fi
