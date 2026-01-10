@@ -13,10 +13,7 @@
 ## Быстрый старт (kind)
 
 ```bash
-make kind-create
-make docker-build
-make kind-load
-make helm-install
+make kind-up
 ```
 
 Миграции (по месту, через kubectl exec в каждый postgres pod):
@@ -32,13 +29,33 @@ SQL файлы находятся в `deploy/sql/*.sql`.
 ## Локальный запуск order-service
 
 ```bash
-export DATABASE_URL=postgres://postgres:postgres@localhost:5432/orderdb?sslmode=disable
-export TX_MODE=twopc
-export INVENTORY_BASE_URL=http://localhost:8081
-export PAYMENT_BASE_URL=http://localhost:8082
-export SHIPPING_BASE_URL=http://localhost:8083
+make run-order
+```
 
-go run ./cmd/order-service
+## Makefile: быстрый запуск и тесты
+
+Загрузить зависимости:
+
+```bash
+make deps
+```
+
+Запуск order-service с возможностью переопределить переменные:
+
+```bash
+make run-order TX_MODE=tcc DATABASE_URL=postgres://postgres:postgres@localhost:5432/orderdb?sslmode=disable
+```
+
+Запуск CLI:
+
+```bash
+make run-cli
+```
+
+Запуск тестов:
+
+```bash
+make test
 ```
 
 ## CLI (TUI)
