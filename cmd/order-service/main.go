@@ -16,10 +16,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	segmentkafka "github.com/segmentio/kafka-go"
 
 	"github.com/nazeru/tx-lab-ecommerce-go/pkg/idempotency"
+	"github.com/nazeru/tx-lab-ecommerce-go/pkg/kafka"
 	"github.com/nazeru/tx-lab-ecommerce-go/pkg/logging"
 	"github.com/nazeru/tx-lab-ecommerce-go/pkg/metrics"
+	"github.com/nazeru/tx-lab-ecommerce-go/pkg/outbox"
 )
 
 var errIdempotencyRace = errors.New("idempotency race")
@@ -33,6 +36,10 @@ type cfg struct {
 	InventoryBaseURL    string
 	PaymentBaseURL      string
 	ShippingBaseURL     string
+	KafkaBrokers        string
+	KafkaTopic          string
+	OutboxPollInterval  time.Duration
+	OutboxBatchSize     int
 }
 
 func readCfg() (cfg, error) {
@@ -44,6 +51,8 @@ func readCfg() (cfg, error) {
 	mode := getenv("TX_MODE", "twopc")
 	toutMS, _ := strconv.Atoi(getenv("REQUEST_TIMEOUT_MS", "2500"))
 	mock := strings.ToLower(getenv("MOCK_2PC", "true"))
+	outboxPollMS, _ := strconv.Atoi(getenv("OUTBOX_POLL_MS", "500"))
+	outboxBatch, _ := strconv.Atoi(getenv("OUTBOX_BATCH", "100"))
 
 	return cfg{
 		Port:                port,
@@ -54,6 +63,10 @@ func readCfg() (cfg, error) {
 		InventoryBaseURL:    strings.TrimRight(getenv("INVENTORY_BASE_URL", ""), "/"),
 		PaymentBaseURL:      strings.TrimRight(getenv("PAYMENT_BASE_URL", ""), "/"),
 		ShippingBaseURL:     strings.TrimRight(getenv("SHIPPING_BASE_URL", ""), "/"),
+		KafkaBrokers:        getenv("KAFKA_BROKERS", ""),
+		KafkaTopic:          getenv("KAFKA_TOPIC", "txlab.events"),
+		OutboxPollInterval:  time.Duration(outboxPollMS) * time.Millisecond,
+		OutboxBatchSize:     outboxBatch,
 	}, nil
 }
 
@@ -72,6 +85,14 @@ type CheckoutResponse struct {
 	OrderID string `json:"order_id"`
 	TxID    string `json:"txid,omitempty"`
 	Status  string `json:"status"`
+}
+
+type Event struct {
+	EventID string         `json:"event_id"`
+	TxID    string         `json:"txid"`
+	OrderID string         `json:"order_id"`
+	Type    string         `json:"type"`
+	Payload map[string]any `json:"payload"`
 }
 
 func main() {
@@ -95,6 +116,10 @@ func main() {
 	}
 
 	client := &http.Client{Timeout: cfg.RequestTimeout}
+	kafkaClient := kafka.NewClient(cfg.KafkaBrokers)
+	if kafkaClient.Enabled() {
+		startOutboxRelay(context.Background(), pool, kafkaClient, cfg)
+	}
 
 	srvMetrics := metrics.NewServerMetrics("order_service")
 	mux := http.NewServeMux()
@@ -197,17 +222,107 @@ func main() {
 			return
 		}
 
-		// 2) Если не 2PC — сразу подтверждаем
-		if !strings.EqualFold(cfg.TxMode, "twopc") {
+		// 2) Non-2PC modes
+		switch strings.ToLower(cfg.TxMode) {
+		case "tcc":
+			txid := uuid.NewString()
+			if err := runTCC(ctx, client, pool, cfg, txid, orderID, req); err != nil {
+				_ = updateOrderStatus(ctx, pool, orderID, "REJECTED")
+				logging.Log(logging.Fields{
+					Service:    "order-service",
+					TxID:       txid,
+					OrderID:    orderID,
+					Step:       "tcc",
+					Status:     "rejected",
+					DurationMS: time.Since(start).Milliseconds(),
+				})
+				writeJSON(w, http.StatusBadGateway, CheckoutResponse{OrderID: orderID, TxID: txid, Status: "REJECTED"})
+				srvMetrics.Requests.WithLabelValues("checkout", "502").Inc()
+				srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
+				return
+			}
 			_ = updateOrderStatus(ctx, pool, orderID, "CONFIRMED")
 			logging.Log(logging.Fields{
 				Service:    "order-service",
+				TxID:       txid,
 				OrderID:    orderID,
-				Step:       "checkout",
+				Step:       "tcc",
 				Status:     "confirmed",
 				DurationMS: time.Since(start).Milliseconds(),
 			})
-			writeJSON(w, http.StatusOK, CheckoutResponse{OrderID: orderID, Status: "CONFIRMED"})
+			writeJSON(w, http.StatusOK, CheckoutResponse{OrderID: orderID, TxID: txid, Status: "CONFIRMED"})
+			srvMetrics.Requests.WithLabelValues("checkout", "200").Inc()
+			srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
+			return
+		case "saga-orch":
+			txid := uuid.NewString()
+			if err := runSagaOrch(ctx, client, pool, cfg, txid, orderID, req); err != nil {
+				_ = updateOrderStatus(ctx, pool, orderID, "REJECTED")
+				logging.Log(logging.Fields{
+					Service:    "order-service",
+					TxID:       txid,
+					OrderID:    orderID,
+					Step:       "saga_orch",
+					Status:     "rejected",
+					DurationMS: time.Since(start).Milliseconds(),
+				})
+				writeJSON(w, http.StatusBadGateway, CheckoutResponse{OrderID: orderID, TxID: txid, Status: "REJECTED"})
+				srvMetrics.Requests.WithLabelValues("checkout", "502").Inc()
+				srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
+				return
+			}
+			_ = updateOrderStatus(ctx, pool, orderID, "CONFIRMED")
+			logging.Log(logging.Fields{
+				Service:    "order-service",
+				TxID:       txid,
+				OrderID:    orderID,
+				Step:       "saga_orch",
+				Status:     "confirmed",
+				DurationMS: time.Since(start).Milliseconds(),
+			})
+			writeJSON(w, http.StatusOK, CheckoutResponse{OrderID: orderID, TxID: txid, Status: "CONFIRMED"})
+			srvMetrics.Requests.WithLabelValues("checkout", "200").Inc()
+			srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
+			return
+		case "saga-chor":
+			txid := uuid.NewString()
+			if err := enqueueOrderEvent(ctx, pool, cfg, txid, orderID, "OrderCreated", req); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+				srvMetrics.Requests.WithLabelValues("checkout", "500").Inc()
+				srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
+				return
+			}
+			_ = updateOrderStatus(ctx, pool, orderID, "PENDING")
+			logging.Log(logging.Fields{
+				Service:    "order-service",
+				TxID:       txid,
+				OrderID:    orderID,
+				Step:       "saga_chor",
+				Status:     "pending",
+				DurationMS: time.Since(start).Milliseconds(),
+			})
+			writeJSON(w, http.StatusOK, CheckoutResponse{OrderID: orderID, TxID: txid, Status: "PENDING"})
+			srvMetrics.Requests.WithLabelValues("checkout", "200").Inc()
+			srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
+			return
+		case "outbox":
+			txid := uuid.NewString()
+			if err := enqueueOrderEvent(ctx, pool, cfg, txid, orderID, "OrderConfirmed", req); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+				srvMetrics.Requests.WithLabelValues("checkout", "500").Inc()
+				srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
+				return
+			}
+			_ = updateOrderStatus(ctx, pool, orderID, "CONFIRMED")
+			logging.Log(logging.Fields{
+				Service:    "order-service",
+				TxID:       txid,
+				OrderID:    orderID,
+				Step:       "outbox",
+				Status:     "confirmed",
+				DurationMS: time.Since(start).Milliseconds(),
+			})
+			writeJSON(w, http.StatusOK, CheckoutResponse{OrderID: orderID, TxID: txid, Status: "CONFIRMED"})
 			srvMetrics.Requests.WithLabelValues("checkout", "200").Inc()
 			srvMetrics.LatencyMS.WithLabelValues("checkout").Observe(float64(time.Since(start).Milliseconds()))
 			return
@@ -425,6 +540,129 @@ func twopcAbort(ctx context.Context, client *http.Client, txid, orderID string, 
 		_ = postJSON(ctx, client, p.URL+"/2pc/abort", body)
 	}
 	return nil
+}
+
+type tccStep struct {
+	Name string
+	URL  string
+	Step string
+}
+
+func buildTCCSteps(cfg cfg) []tccStep {
+	var steps []tccStep
+	if cfg.InventoryBaseURL != "" {
+		steps = append(steps, tccStep{Name: "inventory", URL: cfg.InventoryBaseURL, Step: "reserve_inventory"})
+	}
+	if cfg.PaymentBaseURL != "" {
+		steps = append(steps, tccStep{Name: "payment", URL: cfg.PaymentBaseURL, Step: "charge_payment"})
+	}
+	if cfg.ShippingBaseURL != "" {
+		steps = append(steps, tccStep{Name: "shipping", URL: cfg.ShippingBaseURL, Step: "arrange_shipping"})
+	}
+	return steps
+}
+
+func runTCC(ctx context.Context, client *http.Client, pool *pgxpool.Pool, cfg cfg, txid, orderID string, req CheckoutRequest) error {
+	steps := buildTCCSteps(cfg)
+	body := func(step string) map[string]any {
+		return map[string]any{"txid": txid, "order_id": orderID, "step": step, "items": req.Items, "total": req.Total}
+	}
+	var completed []tccStep
+	for _, step := range steps {
+		if err := postJSON(ctx, client, step.URL+"/tcc/try", body(step.Step)); err != nil {
+			_ = compensateTCC(ctx, client, completed, txid, orderID)
+			return fmt.Errorf("tcc try failed for %s: %w", step.Name, err)
+		}
+		completed = append(completed, step)
+	}
+	for _, step := range completed {
+		if err := postJSON(ctx, client, step.URL+"/tcc/confirm", body(step.Step)); err != nil {
+			_ = compensateTCC(ctx, client, completed, txid, orderID)
+			return fmt.Errorf("tcc confirm failed for %s: %w", step.Name, err)
+		}
+	}
+	_ = enqueueOrderEvent(ctx, pool, cfg, txid, orderID, "OrderConfirmed", req)
+	return nil
+}
+
+func compensateTCC(ctx context.Context, client *http.Client, steps []tccStep, txid, orderID string) error {
+	for i := len(steps) - 1; i >= 0; i-- {
+		step := steps[i]
+		body := map[string]any{"txid": txid, "order_id": orderID, "step": step.Step}
+		_ = postJSON(ctx, client, step.URL+"/tcc/cancel", body)
+	}
+	return nil
+}
+
+func runSagaOrch(ctx context.Context, client *http.Client, pool *pgxpool.Pool, cfg cfg, txid, orderID string, req CheckoutRequest) error {
+	steps := buildTCCSteps(cfg)
+	body := func(step string) map[string]any {
+		return map[string]any{"txid": txid, "order_id": orderID, "step": "saga_orch_" + step, "items": req.Items, "total": req.Total}
+	}
+	var completed []tccStep
+	for _, step := range steps {
+		if err := postJSON(ctx, client, step.URL+"/tcc/try", body(step.Step)); err != nil {
+			_ = compensateSaga(ctx, client, completed, txid, orderID)
+			return fmt.Errorf("saga action failed for %s: %w", step.Name, err)
+		}
+		completed = append(completed, step)
+	}
+	_ = enqueueOrderEvent(ctx, pool, cfg, txid, orderID, "OrderConfirmed", req)
+	return nil
+}
+
+func compensateSaga(ctx context.Context, client *http.Client, steps []tccStep, txid, orderID string) error {
+	for i := len(steps) - 1; i >= 0; i-- {
+		step := steps[i]
+		body := map[string]any{"txid": txid, "order_id": orderID, "step": "saga_orch_" + step.Step}
+		_ = postJSON(ctx, client, step.URL+"/tcc/cancel", body)
+	}
+	return nil
+}
+
+func enqueueOrderEvent(ctx context.Context, pool *pgxpool.Pool, cfg cfg, txid, orderID, eventType string, req CheckoutRequest) error {
+	payload := map[string]any{
+		"items": req.Items,
+		"total": req.Total,
+	}
+	eventID := uuid.NewString()
+	event := Event{
+		EventID: eventID,
+		TxID:    txid,
+		OrderID: orderID,
+		Type:    eventType,
+		Payload: payload,
+	}
+	return outbox.Insert(ctx, pool, eventID, cfg.KafkaTopic, orderID, event)
+}
+
+func startOutboxRelay(ctx context.Context, pool *pgxpool.Pool, client *kafka.Client, cfg cfg) {
+	writer := client.NewWriter(cfg.KafkaTopic)
+	go func() {
+		ticker := time.NewTicker(cfg.OutboxPollInterval)
+		defer ticker.Stop()
+		defer writer.Close()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				records, err := outbox.FetchPending(ctx, pool, cfg.OutboxBatchSize)
+				if err != nil {
+					log.Printf("outbox fetch error: %v", err)
+					continue
+				}
+				for _, rec := range records {
+					msg := segmentkafka.Message{Key: []byte(rec.Key), Value: rec.Payload, Time: time.Now().UTC()}
+					if err := writer.WriteMessages(ctx, msg); err != nil {
+						log.Printf("outbox publish error: %v", err)
+						break
+					}
+					_ = outbox.MarkSent(ctx, pool, rec.ID)
+				}
+			}
+		}
+	}()
 }
 
 func postJSON(ctx context.Context, client *http.Client, url string, body any) error {
