@@ -114,9 +114,9 @@ go run ./cmd/bench-runner \
 
 ```bash
 ./scripts/bench-matrix.sh
-TX_MODES="twopc saga" ./scripts/bench-matrix.sh
+TX_MODES="twopc saga-orch saga-chor" ./scripts/bench-matrix.sh
 BENCH_TIMEOUT=30s ./scripts/bench-matrix.sh
-SKIP_TX_MODE_SWITCH=1 TX_MODES="twopc saga" ./scripts/bench-matrix.sh
+SKIP_TX_MODE_SWITCH=1 TX_MODES="twopc saga-orch saga-chor" ./scripts/bench-matrix.sh
 ```
 
 Настраиваемые параметры (переменные окружения):
@@ -131,7 +131,7 @@ PAYMENT_BASE_URL=http://localhost:8082 \
 SHIPPING_BASE_URL=http://localhost:8083 \
 BENCH_SCENARIO=all \
 CONCURRENCY=10 \
-TX_MODES="twopc saga tcc outbox" \
+TX_MODES="twopc saga-orch saga-chor tcc outbox" \
 TX_MODE_DEPLOYMENT=order \
 BENCH_TIMEOUT=30s \
 SKIP_TX_MODE_SWITCH=0 \

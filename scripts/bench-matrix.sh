@@ -40,7 +40,21 @@ REPLICAS_LIST=(1 3 5 7 10)
 TX_COUNTS=(1000)
 LATENCIES_MS=(100 500 1000)
 JITTERS_MS=(20)
-TX_MODES_DEFAULT=("twopc" "saga" "tcc" "outbox")
+TX_MODES_DEFAULT=("twopc" "saga-orch" "saga-chor" "tcc" "outbox")
+
+# --- 3 network profiles ---
+NET_PROFILES=(normal lossy congested)
+
+# --- Net profile params (can be overridden via env) ---
+LOSSY_LOSS_PCT="${LOSSY_LOSS_PCT:-0.3}"          # percent, e.g. 0.3 means 0.3%
+LOSSY_REORDER_PCT="${LOSSY_REORDER_PCT:-0.05}"   # percent
+LOSSY_REORDER_CORR="${LOSSY_REORDER_CORR:-50}"   # percent correlation for reorder
+LOSSY_DUP_PCT="${LOSSY_DUP_PCT:-0.01}"           # percent
+
+CONGESTED_RATE="${CONGESTED_RATE:-5mbit}"        # e.g. 2mbit, 10mbit
+CONGESTED_BURST="${CONGESTED_BURST:-64kb}"
+CONGESTED_TBF_LAT="${CONGESTED_TBF_LAT:-250ms}"
+CONGESTED_LOSS_PCT="${CONGESTED_LOSS_PCT:-0.2}"  # percent
 
 # Fallback if whitespace-only was provided
 [[ -n "$NAMESPACE" ]] || NAMESPACE="txlab"
@@ -165,11 +179,12 @@ cat <<HEADER > "$md_file"
 * Scenario: $BENCH_SCENARIO
 * Concurrency: $CONCURRENCY
 * TX modes: ${TX_MODES_RAW:-${TX_MODES_DEFAULT[*]}}
+* Net profiles: $(IFS=,; echo "${NET_PROFILES[*]}")
 * Network profiles: latencies [${LATENCIES_MS[*]}] ms, jitters [${JITTERS_MS[*]}] ms
 * Bench timeout: ${BENCH_TIMEOUT:-default}
 
-| TX mode | Replicas | Transactions | Latency (ms) | Jitter (ms) | Avg latency (ms) | Throughput (rps) | Errors | CPU (m) | Memory (Mi) | Net RX (KB/s) | Net TX (KB/s) |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| TX mode | Net profile | Replicas | Transactions | Latency (ms) | Jitter (ms) | Avg latency (ms) | Throughput (rps) | Errors | CPU (m) | Memory (Mi) | Net RX (KB/s) | Net TX (KB/s) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 HEADER
 
 echo "[" > "$json_file"
@@ -229,16 +244,7 @@ list_pods() {
   kubectl get pods -n "$NAMESPACE" -l "$LABEL_SELECTOR" -o jsonpath='{.items[*].metadata.name}'
 }
 
-apply_netem() {
-  local delay_ms=$1
-  local jitter_ms=$2
-  local pod
-  for pod in $(list_pods); do
-    kubectl exec -n "$NAMESPACE" "$pod" -- tc qdisc replace dev eth0 root netem delay "${delay_ms}ms" "${jitter_ms}ms" >/dev/null 2>&1 || true
-  done
-}
-
-clear_netem() {
+clear_qdisc() {
   local pod
   for pod in $(list_pods); do
     kubectl exec -n "$NAMESPACE" "$pod" -- tc qdisc del dev eth0 root >/dev/null 2>&1 || true
@@ -246,9 +252,54 @@ clear_netem() {
 }
 
 cleanup() {
-  clear_netem || true
+  clear_qdisc || true
 }
 trap cleanup EXIT
+
+# Apply one of 3 network profiles to all pods matching LABEL_SELECTOR
+apply_net_profile() {
+  local profile=$1
+  local delay_ms=$2
+  local jitter_ms=$3
+
+  local pod
+  for pod in $(list_pods); do
+    # always reset before applying
+    kubectl exec -n "$NAMESPACE" "$pod" -- tc qdisc del dev eth0 root >/dev/null 2>&1 || true
+
+    case "$profile" in
+      normal)
+        kubectl exec -n "$NAMESPACE" "$pod" -- tc qdisc replace dev eth0 root netem \
+          delay "${delay_ms}ms" "${jitter_ms}ms" >/dev/null 2>&1 || true
+        ;;
+
+      lossy)
+        kubectl exec -n "$NAMESPACE" "$pod" -- tc qdisc replace dev eth0 root netem \
+          delay "${delay_ms}ms" "${jitter_ms}ms" \
+          loss "${LOSSY_LOSS_PCT}%" \
+          reorder "${LOSSY_REORDER_PCT}%" "${LOSSY_REORDER_CORR}%" \
+          duplicate "${LOSSY_DUP_PCT}%" \
+          >/dev/null 2>&1 || true
+        ;;
+
+      congested)
+        # tbf (rate limit) as root, netem as child
+        kubectl exec -n "$NAMESPACE" "$pod" -- tc qdisc add dev eth0 root handle 1: tbf \
+          rate "${CONGESTED_RATE}" burst "${CONGESTED_BURST}" latency "${CONGESTED_TBF_LAT}" \
+          >/dev/null 2>&1 || true
+
+        kubectl exec -n "$NAMESPACE" "$pod" -- tc qdisc add dev eth0 parent 1:1 handle 10: netem \
+          delay "${delay_ms}ms" "${jitter_ms}ms" \
+          loss "${CONGESTED_LOSS_PCT}%" \
+          >/dev/null 2>&1 || true
+        ;;
+
+      *)
+        die "unknown net profile: $profile"
+        ;;
+    esac
+  done
+}
 
 sum_net_bytes() {
   local direction=$1
@@ -330,23 +381,24 @@ fi
 for mode in "${tx_modes[@]}"; do
   switch_tx_mode "$mode"
 
-  for replicas in "${REPLICAS_LIST[@]}"; do
-    scale_replicas "$replicas"
+  for profile in "${NET_PROFILES[@]}"; do
+    for replicas in "${REPLICAS_LIST[@]}"; do
+      scale_replicas "$replicas"
 
-    for latency in "${LATENCIES_MS[@]}"; do
-      for jitter in "${JITTERS_MS[@]}"; do
-        apply_netem "$latency" "$jitter"
+      for latency in "${LATENCIES_MS[@]}"; do
+        for jitter in "${JITTERS_MS[@]}"; do
+          apply_net_profile "$profile" "$latency" "$jitter"
 
-        for tx in "${TX_COUNTS[@]}"; do
-          net_before_rx=$(sum_net_bytes rx)
-          net_before_tx=$(sum_net_bytes tx)
+          for tx in "${TX_COUNTS[@]}"; do
+            net_before_rx=$(sum_net_bytes rx)
+            net_before_tx=$(sum_net_bytes tx)
 
-          bench_json=$(run_bench_json "$tx" "$CONCURRENCY")
+            bench_json=$(run_bench_json "$tx" "$CONCURRENCY")
 
-          net_after_rx=$(sum_net_bytes rx)
-          net_after_tx=$(sum_net_bytes tx)
+            net_after_rx=$(sum_net_bytes rx)
+            net_after_tx=$(sum_net_bytes tx)
 
-          bench_fields=$(printf '%s' "$bench_json" | "$PYTHON_BIN" -c '
+            bench_fields=$(printf '%s' "$bench_json" | "$PYTHON_BIN" -c '
 import json, sys
 d = json.load(sys.stdin)
 avg = d.get("avg_latency_ms", 0)
@@ -356,60 +408,62 @@ dur = d.get("duration_seconds", 0)
 print(f"{avg:.2f}\t{thr:.2f}\t{err}\t{dur:.4f}")
 ')
 
-          avg_latency=$(echo "$bench_fields" | awk '{print $1}')
-          throughput=$(echo "$bench_fields" | awk '{print $2}')
-          errors=$(echo "$bench_fields" | awk '{print $3}')
-          duration=$(echo "$bench_fields" | awk '{print $4}')
+            avg_latency=$(echo "$bench_fields" | awk '{print $1}')
+            throughput=$(echo "$bench_fields" | awk '{print $2}')
+            errors=$(echo "$bench_fields" | awk '{print $3}')
+            duration=$(echo "$bench_fields" | awk '{print $4}')
 
-          top_fields=$(capture_top)
-          cpu_m=""
-          mem_mi=""
-          if [[ -n "$top_fields" ]]; then
-            cpu_m=$(echo "$top_fields" | awk '{print $1}')
-            mem_mi=$(echo "$top_fields" | awk '{print $2}')
-          fi
-
-          rx_delta=$((net_after_rx - net_before_rx))
-          tx_delta=$((net_after_tx - net_before_tx))
-
-          rx_rate=0
-          tx_rate=0
-          if [[ -n "$duration" && "$duration" != "0" ]]; then
-            rx_rate=$("$PYTHON_BIN" -c "print(int(${rx_delta} / ${duration}))")
-            tx_rate=$("$PYTHON_BIN" -c "print(int(${tx_delta} / ${duration}))")
-          fi
-
-          if [[ "$first_record" == true ]]; then
-            first_record=false
-          else
-            echo "," >> "$json_file"
-          fi
-
-          {
-            printf '%s\n' "  {"
-            printf '    "tx_mode": "%s",\n' "$mode"
-            printf '    "replicas": %s,\n' "$replicas"
-            printf '    "transactions": %s,\n' "$tx"
-            printf '    "latency_ms": %s,\n' "$latency"
-            printf '    "jitter_ms": %s,\n' "$jitter"
-            if [[ -n "${BENCH_TIMEOUT//[[:space:]]/}" ]]; then
-              printf '    "bench_timeout": "%s",\n' "$BENCH_TIMEOUT"
+            top_fields=$(capture_top)
+            cpu_m=""
+            mem_mi=""
+            if [[ -n "$top_fields" ]]; then
+              cpu_m=$(echo "$top_fields" | awk '{print $1}')
+              mem_mi=$(echo "$top_fields" | awk '{print $2}')
             fi
-            printf '    "bench": %s,\n' "$(printf '%s' "$bench_json" | tr -d '\n')"
-            printf '    "resources": {"cpu_millicores": %s, "memory_mib": %s, "network_rx_bytes": %s, "network_tx_bytes": %s, "network_rx_bps": %s, "network_tx_bps": %s}\n' \
-              "${cpu_m:-null}" "${mem_mi:-null}" "$rx_delta" "$tx_delta" "$rx_rate" "$tx_rate"
-            printf '%s\n' "  }"
-          } >> "$json_file"
 
-          net_rx_kbps=$("$PYTHON_BIN" -c "print(round(${rx_rate} / 1024, 2))")
-          net_tx_kbps=$("$PYTHON_BIN" -c "print(round(${tx_rate} / 1024, 2))")
+            rx_delta=$((net_after_rx - net_before_rx))
+            tx_delta=$((net_after_tx - net_before_tx))
 
-          printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' \
-            "$mode" "$replicas" "$tx" "$latency" "$jitter" "$avg_latency" "$throughput" "$errors" \
-            "${cpu_m:-n/a}" "${mem_mi:-n/a}" "$net_rx_kbps" "$net_tx_kbps" >> "$md_file"
+            rx_rate=0
+            tx_rate=0
+            if [[ -n "$duration" && "$duration" != "0" ]]; then
+              rx_rate=$("$PYTHON_BIN" -c "print(int(${rx_delta} / ${duration}))")
+              tx_rate=$("$PYTHON_BIN" -c "print(int(${tx_delta} / ${duration}))")
+            fi
+
+            if [[ "$first_record" == true ]]; then
+              first_record=false
+            else
+              echo "," >> "$json_file"
+            fi
+
+            {
+              printf '%s\n' "  {"
+              printf '    "tx_mode": "%s",\n' "$mode"
+              printf '    "net_profile": "%s",\n' "$profile"
+              printf '    "replicas": %s,\n' "$replicas"
+              printf '    "transactions": %s,\n' "$tx"
+              printf '    "latency_ms": %s,\n' "$latency"
+              printf '    "jitter_ms": %s,\n' "$jitter"
+              if [[ -n "${BENCH_TIMEOUT//[[:space:]]/}" ]]; then
+                printf '    "bench_timeout": "%s",\n' "$BENCH_TIMEOUT"
+              fi
+              printf '    "bench": %s,\n' "$(printf '%s' "$bench_json" | tr -d '\n')"
+              printf '    "resources": {"cpu_millicores": %s, "memory_mib": %s, "network_rx_bytes": %s, "network_tx_bytes": %s, "network_rx_bps": %s, "network_tx_bps": %s}\n' \
+                "${cpu_m:-null}" "${mem_mi:-null}" "$rx_delta" "$tx_delta" "$rx_rate" "$tx_rate"
+              printf '%s\n' "  }"
+            } >> "$json_file"
+
+            net_rx_kbps=$("$PYTHON_BIN" -c "print(round(${rx_rate} / 1024, 2))")
+            net_tx_kbps=$("$PYTHON_BIN" -c "print(round(${tx_rate} / 1024, 2))")
+
+            printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' \
+              "$mode" "$profile" "$replicas" "$tx" "$latency" "$jitter" "$avg_latency" "$throughput" "$errors" \
+              "${cpu_m:-n/a}" "${mem_mi:-n/a}" "$net_rx_kbps" "$net_tx_kbps" >> "$md_file"
+          done
+
+          clear_qdisc
         done
-
-        clear_netem
       done
     done
   done
