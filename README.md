@@ -92,6 +92,20 @@ CLI позволяет выбирать режим и сценарий (success/
 go run ./cmd/bench-runner -base-url http://localhost:8080 -scenario checkout -total 1000 -concurrency 10
 ```
 
+Ожидание финального статуса (end-to-end) для `checkout`:
+
+```bash
+go run ./cmd/bench-runner \
+  -base-url http://localhost:8080 \
+  -scenario checkout \
+  -total 1000 \
+  -concurrency 10 \
+  -await-final \
+  -final-timeout 30s \
+  -final-interval 500ms \
+  -final-statuses CONFIRMED,COMMITTED
+```
+
 Единичный прогон всех методов распределённых транзакций (2PC + TCC):
 
 ```bash
@@ -110,14 +124,48 @@ go run ./cmd/bench-runner \
 ./scripts/bench-matrix.sh
 ```
 
+### How to run bench-matrix reliably
+
+Базовый запуск с защитой от параллельных прогонов, таймаутами и netem на нескольких сервисах:
+
+```bash
+KUBECTL_REQUEST_TIMEOUT=15s \
+KUBECTL_EXEC_TIMEOUT=6s \
+KUBECTL_TOP_TIMEOUT=6s \
+BENCH_RUN_TIMEOUT=10m \
+BENCH_REQUEST_TIMEOUT=2s \
+NETEM_CONTAINER=netem \
+NETEM_TARGET_SELECTORS="app=order;app=inventory;app=payment;app=shipping" \
+PROBE_SERVICES="order inventory payment shipping" \
+READINESS_DEPLOYMENTS="order inventory payment shipping" \
+CONCURRENCY_LIST="10 25 50" \
+BENCH_RUNS_PER_POINT=3 \
+./scripts/bench-matrix.sh
+```
+
+Быстрый smoke-прогон (до ~2 минут):
+
+```bash
+SMOKE_MODE=1 ./scripts/bench-matrix.sh
+```
+
 Примеры запуска:
 
 ```bash
 ./scripts/bench-matrix.sh
 TX_MODES="twopc saga-orch saga-chor" ./scripts/bench-matrix.sh
+CONCURRENCY_LIST="10 25 50 100" BENCH_RUNS_PER_POINT=3 ./scripts/bench-matrix.sh
 BENCH_TIMEOUT=30s ./scripts/bench-matrix.sh
 SKIP_TX_MODE_SWITCH=1 TX_MODES="twopc saga-orch saga-chor" ./scripts/bench-matrix.sh
 ```
+
+Smoke-проверка бизнес-семантики checkout:
+
+```bash
+./scripts/smoke-checkout.sh
+```
+
+Подробная методика — в `docs/bench-methodology.md`.
 
 Настраиваемые параметры (переменные окружения):
 
@@ -131,6 +179,17 @@ PAYMENT_BASE_URL=http://localhost:8082 \
 SHIPPING_BASE_URL=http://localhost:8083 \
 BENCH_SCENARIO=all \
 CONCURRENCY=10 \
+CONCURRENCY_LIST="10 25 50 100" \
+BENCH_RUNS_PER_POINT=3 \
+WARMUP_TX=200 \
+AWAIT_FINAL=1 \
+FINAL_TIMEOUT=30s \
+FINAL_INTERVAL=500ms \
+FINAL_STATUSES="CONFIRMED,COMMITTED" \
+NETEM_TARGET_SELECTORS="app=order;app=inventory;app=payment;app=shipping" \
+METRICS_SELECTORS="app=order;app=inventory;app=payment;app=shipping" \
+PROBE_SERVICES="order inventory payment shipping" \
+READINESS_DEPLOYMENTS="order inventory payment shipping" \
 TX_MODES="twopc saga-orch saga-chor tcc outbox" \
 TX_MODE_DEPLOYMENT=order \
 BENCH_TIMEOUT=30s \
