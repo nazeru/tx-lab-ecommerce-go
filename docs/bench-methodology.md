@@ -38,6 +38,7 @@
 NETEM_TARGET_SELECTORS="app=tx-lab-ecommerce-go-txlab-order-service;app=tx-lab-ecommerce-go-txlab-inventory-service;app=tx-lab-ecommerce-go-txlab-payment-service;app=tx-lab-ecommerce-go-txlab-shipping-service" \
 PROBE_SERVICES="tx-lab-ecommerce-go-txlab-order-service tx-lab-ecommerce-go-txlab-inventory-service tx-lab-ecommerce-go-txlab-payment-service tx-lab-ecommerce-go-txlab-shipping-service" \
 NETEM_CONTAINER=netem \
+TX_MODE=saga-orch \
 ./scripts/bench-matrix.sh
 ```
 

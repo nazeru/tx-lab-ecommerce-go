@@ -38,25 +38,21 @@ kube_exec() {
   run_with_timeout "$KUBECTL_EXEC_TIMEOUT" kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec "$@"
 }
 
-kube_top() {
-  run_with_timeout "$KUBECTL_TOP_TIMEOUT" kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" top "$@"
-}
-
 duration_seconds() {
   "$PYTHON_BIN" -c '
-import re,sys
-text=sys.argv[1]
-total=0.0
-for num, unit in re.findall(r"([0-9]*\\.?[0-9]+)(ms|s|m|h)", text):
-    v=float(num)
-    if unit=="ms":
-        total+=v/1000.0
-    elif unit=="s":
-        total+=v
-    elif unit=="m":
-        total+=v*60.0
-    elif unit=="h":
-        total+=v*3600.0
+import re, sys
+text = sys.argv[1]
+total = 0.0
+for num, unit in re.findall(r"([0-9]*\.?[0-9]+)(ms|s|m|h)", text):
+    v = float(num)
+    if unit == "ms":
+        total += v / 1000.0
+    elif unit == "s":
+        total += v
+    elif unit == "m":
+        total += v * 60.0
+    elif unit == "h":
+        total += v * 3600.0
 print(int(total))
 ' "$1"
 }
@@ -65,7 +61,7 @@ print(int(total))
 # Config (env overrides)
 # ----------------------------
 NAMESPACE="$(trim "${NAMESPACE:-txlab}")"
-DEPLOYMENT="$(trim "${DEPLOYMENT:-order}")"                 # logical name, will be resolved to real deployment name
+DEPLOYMENT="$(trim "${DEPLOYMENT:-order}")"
 
 ORDER_BASE_URL="$(trim "${ORDER_BASE_URL:-http://127.0.0.1:8080}")"
 
@@ -81,7 +77,7 @@ WARMUP_ENABLED="$(trim "${WARMUP_ENABLED:-1}")"
 INVALID_RETRY_LIMIT="$(trim "${INVALID_RETRY_LIMIT:-2}")"
 INVALID_RETRY_SLEEP="$(trim "${INVALID_RETRY_SLEEP:-3}")"
 
-# TX modes: override via TX_MODES="twopc saga-orch tcc outbox"
+# TX modes
 TX_MODES_STR="$(trim "${TX_MODES:-}")"
 TX_MODES_DEFAULT=("twopc" "saga-orch" "saga-chor" "tcc" "outbox")
 
@@ -94,7 +90,7 @@ TX_COUNTS=(100)
 LATENCIES_MS=(10)
 JITTERS_MS=(2)
 
-# Network profile parameters (lossy/congested)
+# Network profile parameters
 LOSSY_LOSS_PCT="$(trim "${LOSSY_LOSS_PCT:-1}")"
 LOSSY_DUP_PCT="$(trim "${LOSSY_DUP_PCT:-0.1}")"
 LOSSY_REORDER_PCT="$(trim "${LOSSY_REORDER_PCT:-0.1}")"
@@ -107,13 +103,13 @@ CONGEST_BURST="$(trim "${CONGEST_BURST:-32kb}")"
 CONGEST_LIMIT_PKTS="$(trim "${CONGEST_LIMIT_PKTS:-10000}")"
 CONGEST_LOSS_PCT="$(trim "${CONGEST_LOSS_PCT:-0.2}")"
 
-# Port-forward management for order-service (restarted after every TX_MODE switch)
-MANAGE_ORDER_PF="${MANAGE_ORDER_PF:-1}"                     # 1/0
+# Port-forward management
+MANAGE_ORDER_PF="${MANAGE_ORDER_PF:-1}"
 ORDER_PF_ADDR="$(trim "${ORDER_PF_ADDR:-127.0.0.1}")"
-ORDER_PF_PORT="$(trim "${ORDER_PF_PORT:-8080}")"            # local port for order-service
+ORDER_PF_PORT="$(trim "${ORDER_PF_PORT:-8080}")"
 ORDER_PF_LOG_DIR="$(trim "${ORDER_PF_LOG_DIR:-${RESULTS_DIR}/pf-logs}")"
 
-# Rollout timeouts
+# Timeouts
 ROLLOUT_TIMEOUT="$(trim "${ROLLOUT_TIMEOUT:-5m}")"
 PODS_READY_TIMEOUT_SECONDS="$(trim "${PODS_READY_TIMEOUT_SECONDS:-180}")"
 WAIT_AFTER_NETEM="$(trim "${WAIT_AFTER_NETEM:-1}")"
@@ -127,7 +123,6 @@ BENCH_REQUEST_TIMEOUT="$(trim "${BENCH_REQUEST_TIMEOUT:-2s}")"
 HEARTBEAT_INTERVAL="$(trim "${HEARTBEAT_INTERVAL:-3}")"
 
 SMOKE="${SMOKE:-0}"
-SMOKE_MODE="${SMOKE_MODE:-0}"
 READINESS_DEPLOYMENTS_STR="$(trim "${READINESS_DEPLOYMENTS:-}")"
 READY_HTTP_PATH="$(trim "${READY_HTTP_PATH:-/health}")"
 READY_HTTP_RETRIES="$(trim "${READY_HTTP_RETRIES:-20}")"
@@ -135,6 +130,7 @@ READY_HTTP_SLEEP="$(trim "${READY_HTTP_SLEEP:-0.5}")"
 READY_CHECKOUT_RETRIES="$(trim "${READY_CHECKOUT_RETRIES:-10}")"
 READY_CHECKOUT_SLEEP="$(trim "${READY_CHECKOUT_SLEEP:-0.5}")"
 READY_CHECKOUT_BODY="$(trim "${READY_CHECKOUT_BODY:-}")"
+
 AWAIT_FINAL="$(trim "${AWAIT_FINAL:-0}")"
 FINAL_TIMEOUT="$(trim "${FINAL_TIMEOUT:-30s}")"
 FINAL_INTERVAL="$(trim "${FINAL_INTERVAL:-500ms}")"
@@ -144,17 +140,9 @@ NETEM_TARGET_SELECTORS_STR="$(trim "${NETEM_TARGET_SELECTORS:-}")"
 NETEM_VALIDATE="$(trim "${NETEM_VALIDATE:-1}")"
 NETEM_VALIDATE_LOG_DIR="$(trim "${NETEM_VALIDATE_LOG_DIR:-${RESULTS_DIR}/netem-validate}")"
 NETEM_REQUIRE_TC="$(trim "${NETEM_REQUIRE_TC:-1}")"
-# Container name used to run tc inside the pod. When using the Helm netem sidecar,
-# this should be "netem".
 NETEM_CONTAINER="$(trim "${NETEM_CONTAINER:-netem}")"
-
-# If set, and NETEM_TARGET_SELECTORS is not provided explicitly,
-# derive netem selectors from PROBE_SERVICES by assuming label "app=<service_name>".
 NETEM_TARGETS_FROM_PROBE="$(trim "${NETEM_TARGETS_FROM_PROBE:-1}")"
 
-# kubectl calls can hang on broken kubelet/metrics; keep them bounded.
-KUBECTL_REQUEST_TIMEOUT="$(trim "${KUBECTL_REQUEST_TIMEOUT:-10s}")"
-KUBECTL_EXEC_TIMEOUT="$(trim "${KUBECTL_EXEC_TIMEOUT:-3s}")"
 PROBE_SERVICES_STR="$(trim "${PROBE_SERVICES:-}")"
 PROBE_SERVICE_HOSTS_STR="$(trim "${PROBE_SERVICE_HOSTS:-}")"
 PROBE_IMAGE="$(trim "${PROBE_IMAGE:-busybox:1.36}")"
@@ -162,7 +150,6 @@ PROBE_IMAGE="$(trim "${PROBE_IMAGE:-busybox:1.36}")"
 METRICS_SELECTORS_STR="$(trim "${METRICS_SELECTORS:-}")"
 METRICS_SAMPLE_INTERVAL="$(trim "${METRICS_SAMPLE_INTERVAL:-2}")"
 
-# python3 preferred
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
   PYTHON_BIN=python
@@ -184,7 +171,7 @@ kube get ns "$NAMESPACE" >/dev/null 2>&1 || die "namespace '$NAMESPACE' not foun
 mkdir -p "$RESULTS_DIR" "$ORDER_PF_LOG_DIR" "$BENCH_LOG_DIR" "$NETEM_VALIDATE_LOG_DIR"
 
 # ----------------------------
-# Lock (prevent concurrent runs)
+# Lock
 # ----------------------------
 exec {LOCK_FD}>"$LOCK_FILE" || die "cannot open lock file $LOCK_FILE"
 if ! flock -n "$LOCK_FD"; then
@@ -204,43 +191,34 @@ list_deployments() {
 
 resolve_deployment() {
   local wanted="$1"
-
-  # 1) exact match
   if deployment_exists "$wanted"; then
     printf '%s' "$wanted"
     return 0
   fi
-
-  # 2) prefer "*-<wanted>-service"
   local cand
   cand="$(list_deployments | grep -F "${wanted}-service" | head -n1 || true)"
   if [[ -n "${cand//[[:space:]]/}" ]] && deployment_exists "$cand"; then
     printf '%s' "$cand"
     return 0
   fi
-
-  # 3) any deployment containing wanted, exclude postgres
   cand="$(list_deployments | grep -F "$wanted" | grep -v postgres | head -n1 || true)"
   if [[ -n "${cand//[[:space:]]/}" ]] && deployment_exists "$cand"; then
     printf '%s' "$cand"
     return 0
   fi
-
   return 1
 }
 
 REAL_DEPLOYMENT="$(resolve_deployment "$DEPLOYMENT" || true)"
 if [[ -z "${REAL_DEPLOYMENT//[[:space:]]/}" ]]; then
   echo "ERROR: deployment '$DEPLOYMENT' not found in namespace '$NAMESPACE'." >&2
-  echo "Deployments in '$NAMESPACE':" >&2
-  kube get deploy -n "$NAMESPACE" >&2 || true
   exit 1
 fi
 DEPLOYMENT="$REAL_DEPLOYMENT"
 log "Using deployment: $DEPLOYMENT"
 
 # ----------------------------
-# Derive label selector from deployment.spec.selector.matchLabels
+# Derive label selector
 # ----------------------------
 LABEL_SELECTOR="$(
   kube get deploy "$DEPLOYMENT" -n "$NAMESPACE" -o json | "$PYTHON_BIN" -c '
@@ -250,85 +228,54 @@ ml=(d.get("spec",{}).get("selector",{}) or {}).get("matchLabels") or {}
 print(",".join([f"{k}={v}" for k,v in ml.items()]))
 '
 )"
-[[ -n "${LABEL_SELECTOR//[[:space:]]/}" ]] || die "cannot derive LABEL_SELECTOR from deployment '$DEPLOYMENT' (.spec.selector.matchLabels is empty)"
+[[ -n "${LABEL_SELECTOR//[[:space:]]/}" ]] || die "cannot derive LABEL_SELECTOR"
 log "Pod selector: $LABEL_SELECTOR"
 
 # ----------------------------
-# Resolve service name that matches deployment selector (for port-forward)
+# Resolve Service
 # ----------------------------
 ORDER_SERVICE_NAME="$(
   kube get svc -n "$NAMESPACE" -o json | "$PYTHON_BIN" -c '
 import json,sys
-
 label_selector = sys.argv[1].strip()
 want = {}
 for part in label_selector.split(","):
     if "=" in part:
         k,v = part.split("=",1)
         want[k] = v
-
 data = json.load(sys.stdin)
-
 for s in data.get("items", []):
     sel = (s.get("spec") or {}).get("selector") or {}
     if sel == want:
         print((s.get("metadata") or {}).get("name",""))
         sys.exit(0)
-
 print("")
 ' "$LABEL_SELECTOR"
 )"
 
-# Allow manual override
 ORDER_SERVICE_NAME="$(trim "${ORDER_SERVICE_NAME_OVERRIDE:-$ORDER_SERVICE_NAME}")"
 
 if [[ -z "${ORDER_SERVICE_NAME//[[:space:]]/}" ]]; then
-  # fallback: service name equals deployment name
   if kube get svc -n "$NAMESPACE" "$DEPLOYMENT" >/dev/null 2>&1; then
     ORDER_SERVICE_NAME="$DEPLOYMENT"
   else
-    log "Services in '$NAMESPACE':"
-    kube get svc -n "$NAMESPACE" >&2 || true
-    die "cannot resolve Service for deployment '$DEPLOYMENT' (no svc with selector == deployment selector). Set ORDER_SERVICE_NAME_OVERRIDE."
+    die "cannot resolve Service for deployment '$DEPLOYMENT'. Set ORDER_SERVICE_NAME_OVERRIDE."
   fi
 fi
 
 log "Using service for order port-forward: $ORDER_SERVICE_NAME"
 
 # ----------------------------
-# TX_MODES / NET_PROFILES parsing
+# Parsing Arrays
 # ----------------------------
-TX_MODES=()
-if [[ -n "${TX_MODES_STR//[[:space:]]/}" ]]; then
-  # shellcheck disable=SC2206
-  TX_MODES=($TX_MODES_STR)
-else
-  TX_MODES=("${TX_MODES_DEFAULT[@]}")
-fi
-
-NET_PROFILES=()
-if [[ -n "${NET_PROFILES_STR//[[:space:]]/}" ]]; then
-  # shellcheck disable=SC2206
-  NET_PROFILES=($NET_PROFILES_STR)
-else
-  NET_PROFILES=("${NET_PROFILES_DEFAULT[@]}")
-fi
-
-CONCURRENCY_LIST=()
-if [[ -n "${CONCURRENCY_LIST_STR//[[:space:]]/}" ]]; then
-  # shellcheck disable=SC2206
-  CONCURRENCY_LIST=($CONCURRENCY_LIST_STR)
-else
-  CONCURRENCY_LIST=("$CONCURRENCY")
-fi
-
-READINESS_DEPLOYMENTS=()
-if [[ -n "${READINESS_DEPLOYMENTS_STR//[[:space:]]/}" ]]; then
-  # shellcheck disable=SC2206
-  READINESS_DEPLOYMENTS=($READINESS_DEPLOYMENTS_STR)
-else
-  READINESS_DEPLOYMENTS=("$DEPLOYMENT")
-fi
+# shellcheck disable=SC2206
+if [[ -n "${TX_MODES_STR//[[:space:]]/}" ]]; then TX_MODES=($TX_MODES_STR); else TX_MODES=("${TX_MODES_DEFAULT[@]}"); fi
+# shellcheck disable=SC2206
+if [[ -n "${NET_PROFILES_STR//[[:space:]]/}" ]]; then NET_PROFILES=($NET_PROFILES_STR); else NET_PROFILES=("${NET_PROFILES_DEFAULT[@]}"); fi
+# shellcheck disable=SC2206
+if [[ -n "${CONCURRENCY_LIST_STR//[[:space:]]/}" ]]; then CONCURRENCY_LIST=($CONCURRENCY_LIST_STR); else CONCURRENCY_LIST=("$CONCURRENCY"); fi
+# shellcheck disable=SC2206
+if [[ -n "${READINESS_DEPLOYMENTS_STR//[[:space:]]/}" ]]; then READINESS_DEPLOYMENTS=($READINESS_DEPLOYMENTS_STR); else READINESS_DEPLOYMENTS=("$DEPLOYMENT"); fi
 
 NETEM_TARGET_SELECTORS=()
 if [[ -n "${NETEM_TARGET_SELECTORS_STR//[[:space:]]/}" ]]; then
@@ -354,20 +301,12 @@ else
   METRICS_SELECTORS=("$LABEL_SELECTOR")
 fi
 
-PROBE_SERVICES=()
-if [[ -n "${PROBE_SERVICES_STR//[[:space:]]/}" ]]; then
-  # shellcheck disable=SC2206
-  PROBE_SERVICES=($PROBE_SERVICES_STR)
-fi
+# shellcheck disable=SC2206
+if [[ -n "${PROBE_SERVICES_STR//[[:space:]]/}" ]]; then PROBE_SERVICES=($PROBE_SERVICES_STR); fi
+# shellcheck disable=SC2206
+if [[ -n "${PROBE_SERVICE_HOSTS_STR//[[:space:]]/}" ]]; then PROBE_SERVICE_HOSTS=($PROBE_SERVICE_HOSTS_STR); fi
 
-PROBE_SERVICE_HOSTS=()
-if [[ -n "${PROBE_SERVICE_HOSTS_STR//[[:space:]]/}" ]]; then
-  # shellcheck disable=SC2206
-  PROBE_SERVICE_HOSTS=($PROBE_SERVICE_HOSTS_STR)
-fi
-
-# If user didn't provide probe targets, try to infer them from Helm naming:
-#   <release>-txlab-order-service -> also probe inventory/payment/shipping if present.
+# Probe inference
 if [[ ${#PROBE_SERVICES[@]} -eq 0 && ${#PROBE_SERVICE_HOSTS[@]} -eq 0 && "$NETEM_VALIDATE" == "1" ]]; then
   PROBE_SERVICES=("$ORDER_SERVICE_NAME")
   if [[ "$ORDER_SERVICE_NAME" == *"-order-service" ]]; then
@@ -381,12 +320,10 @@ if [[ ${#PROBE_SERVICES[@]} -eq 0 && ${#PROBE_SERVICE_HOSTS[@]} -eq 0 && "$NETEM
   fi
 fi
 
-# If user didn't provide netem selectors explicitly, optionally derive them from PROBE_SERVICES.
-# This matches this repository's Helm chart (label: app=<service name>).
+# Netem selectors inference
 if [[ -z "${NETEM_TARGET_SELECTORS_STR//[[:space:]]/}" && "$NETEM_TARGETS_FROM_PROBE" == "1" && ${#PROBE_SERVICES[@]} -gt 0 ]]; then
   derived=()
   for svc in "${PROBE_SERVICES[@]}"; do
-    # Only add if there are pods with such label.
     if kubectl get pods -n "$NAMESPACE" -l "app=$svc" >/dev/null 2>&1; then
       derived+=("app=$svc")
     fi
@@ -397,14 +334,14 @@ if [[ -z "${NETEM_TARGET_SELECTORS_STR//[[:space:]]/}" && "$NETEM_TARGETS_FROM_P
 fi
 
 # ----------------------------
-# Build bench-runner once
+# Build bench-runner
 # ----------------------------
 BENCH_BIN="${BENCH_BIN:-/tmp/bench-runner}"
 go build -o "$BENCH_BIN" ./cmd/bench-runner
 [[ -x "$BENCH_BIN" ]] || die "bench-runner binary not found at $BENCH_BIN"
 
 # ----------------------------
-# Output files
+# Output setup
 # ----------------------------
 timestamp="$(date -u +"%Y%m%dT%H%M%SZ")"
 json_file="$RESULTS_DIR/benchmarks-$timestamp.json"
@@ -412,24 +349,10 @@ md_file="$RESULTS_DIR/benchmarks-$timestamp.md"
 
 cat <<HEADER > "$md_file"
 # Benchmark results ($timestamp)
-
 * Namespace: $NAMESPACE
 * Deployment: $DEPLOYMENT
-* Service (order): $ORDER_SERVICE_NAME
-* Pod selector: $LABEL_SELECTOR
-* Base URL: $ORDER_BASE_URL
-* Concurrency list: ${CONCURRENCY_LIST[*]}
-* Runs per point: $BENCH_RUNS_PER_POINT (warmup=${WARMUP_ENABLED}, warmup_tx=$WARMUP_TX)
-* TX modes: ${TX_MODES[*]}
-* Net profiles: ${NET_PROFILES[*]}
-* Port-forward restart policy: stop before TX_MODE switch, start after rollout (MANAGE_ORDER_PF=$MANAGE_ORDER_PF)
-* Netem target selectors: ${NETEM_TARGET_SELECTORS[*]}
-* Metrics selectors: ${METRICS_SELECTORS[*]}
-* Net profile parameters:
-  * normal: delay/jitter from matrix (no loss)
-  * lossy: loss=${LOSSY_LOSS_PCT}%, dup=${LOSSY_DUP_PCT}%, reorder=${LOSSY_REORDER_PCT}% corr=${LOSSY_REORDER_CORR}%
-  * congested: delay=${CONGEST_DELAY_MS}ms jitter=${CONGEST_JITTER_MS}ms loss=${CONGEST_LOSS_PCT}% rate=${CONGEST_RATE} burst=${CONGEST_BURST} limit=${CONGEST_LIMIT_PKTS}
-
+* Service: $ORDER_SERVICE_NAME
+* Selectors: ${NETEM_TARGET_SELECTORS[*]}
 | TX mode | Net profile | Replicas | Concurrency | Run | Transactions | Latency (ms) | Jitter (ms) | Avg latency (ms) | P95 (ms) | P99 (ms) | Throughput (rps) | Errors | Error classes | Status counts | Finalized/Timeouts | First error | CPU avg/max (m) | Mem avg/max (Mi) | Net RX (KB/s) | Net TX (KB/s) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 HEADER
@@ -475,15 +398,12 @@ import json,sys,os
 desired=int(os.environ.get("DESIRED","1"))
 d=json.load(sys.stdin)
 items=d.get("items",[])
-
 active=[p for p in items if not (p.get("metadata",{}) or {}).get("deletionTimestamp")]
 ready=0
 for p in active:
     cs=(p.get("status",{}) or {}).get("containerStatuses") or []
     if cs and all(c.get("ready") for c in cs):
         ready += 1
-
-# OK, если ровно desired активных pod и все они Ready
 if len(active)==desired and ready==desired:
     print("OK")
 else:
@@ -493,31 +413,24 @@ else:
     if [[ "$status" == "OK" ]]; then
       return 0
     fi
-
-    # периодически печатать прогресс, чтобы не выглядело “зависанием”
     log "$status"
-
     if (( $(date +%s) - start > timeout_s )); then
       echo "ERROR: pods did not become stable in ${timeout_s}s" >&2
-      kubectl -n "$NAMESPACE" get pods -l "$selector" -o wide >&2 || true
-      kubectl -n "$NAMESPACE" describe deploy "$deployment" >&2 || true
       return 1
     fi
-
     sleep 0.5
   done
 }
 
 wait_pods_stable() {
-  local timeout_s="${1:-180}"
-  wait_pods_stable_for "$LABEL_SELECTOR" "$DEPLOYMENT" "$timeout_s"
+  wait_pods_stable_for "$LABEL_SELECTOR" "$DEPLOYMENT" "$PODS_READY_TIMEOUT_SECONDS"
 }
 
 scale_replicas() {
   local replicas="$1"
   kube -n "$NAMESPACE" scale deployment "$DEPLOYMENT" --replicas="$replicas" >/dev/null
   ensure_rollout
-  wait_pods_stable "$PODS_READY_TIMEOUT_SECONDS"
+  wait_pods_stable
 }
 
 list_pods_for() {
@@ -527,16 +440,10 @@ list_pods_for() {
   if ! pods="$(kube get pods -n "$NAMESPACE" -l "$selector" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)"; then
     die "kubectl get pods failed for selector '$selector'"
   fi
-  if [[ -z "${pods//[[:space:]]/}" ]]; then
-    if [[ "$NETEM_VALIDATE" == "1" && "$allow_empty" != "1" ]]; then
-      die "no pods found for selector '$selector' (NETEM_VALIDATE=1)"
-    fi
+  if [[ -z "${pods//[[:space:]]/}" && "$NETEM_VALIDATE" == "1" && "$allow_empty" != "1" ]]; then
+    die "no pods found for selector '$selector'"
   fi
   echo "$pods"
-}
-
-list_pods() {
-  list_pods_for "$LABEL_SELECTOR"
 }
 
 ensure_deploy_ready() {
@@ -551,13 +458,10 @@ wait_http_ready() {
   local path="$2"
   local retries="$3"
   local sleep_s="$4"
-  local code
-  local i
-  for i in $(seq 1 "$retries"); do
+  for _ in $(seq 1 "$retries"); do
+    local code
     code="$(curl -s -o /dev/null -w '%{http_code}' "${base_url%/}${path}" || echo "000")"
-    if [[ "$code" == "200" ]]; then
-      return 0
-    fi
+    if [[ "$code" == "200" ]]; then return 0; fi
     sleep "$sleep_s"
   done
   return 1
@@ -567,27 +471,20 @@ warmup_checkout() {
   local base_url="$1"
   local attempts="$2"
   local sleep_s="$3"
-  local order_id
-  local idem
-  local payload
-  local code
-  local i
-  for i in $(seq 1 "$attempts"); do
+  for _ in $(seq 1 "$attempts"); do
+    local order_id
     order_id="$($PYTHON_BIN -c 'import uuid; print(uuid.uuid4())')"
+    local idem
     idem="$($PYTHON_BIN -c 'import uuid; print(uuid.uuid4())')"
+    local payload
     if [[ -n "${READY_CHECKOUT_BODY//[[:space:]]/}" ]]; then
       payload="$READY_CHECKOUT_BODY"
     else
       payload="$($PYTHON_BIN -c "import json; print(json.dumps({'order_id': '$order_id', 'total': 1200, 'items': [{'product_id': 'sku-1', 'quantity': 1}]}))")"
     fi
-    code="$(curl -s -o /dev/null -w '%{http_code}' \
-      -H 'Content-Type: application/json' \
-      -H "Idempotency-Key: $idem" \
-      -d "$payload" \
-      "${base_url%/}/checkout" || echo "000")"
-    if [[ "$code" == 2* ]]; then
-      return 0
-    fi
+    local code
+    code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -H "Idempotency-Key: $idem" -d "$payload" "${base_url%/}/checkout" || echo "000")"
+    if [[ "$code" == 2* ]]; then return 0; fi
     sleep "$sleep_s"
   done
   return 1
@@ -598,92 +495,55 @@ ensure_readiness() {
   for dep in "${READINESS_DEPLOYMENTS[@]}"; do
     local resolved
     resolved="$(resolve_deployment "$dep" || true)"
-    if [[ -z "${resolved//[[:space:]]/}" ]]; then
-      die "readiness deployment '$dep' not found"
-    fi
+    [[ -n "${resolved//[[:space:]]/}" ]] || die "readiness deployment '$dep' not found"
     local selector
     selector="$(selector_for_deploy "$resolved")"
-    if [[ -z "${selector//[[:space:]]/}" ]]; then
-      die "cannot derive selector for readiness deployment '$resolved'"
-    fi
-    log "Readiness check: deployment=$resolved selector=$selector"
     ensure_deploy_ready "$resolved" "$selector"
   done
 
   ensure_order_pf
   if ! wait_http_ready "$BENCH_BASE_URL" "$READY_HTTP_PATH" "$READY_HTTP_RETRIES" "$READY_HTTP_SLEEP"; then
-    die "readiness check failed for ${BENCH_BASE_URL}${READY_HTTP_PATH}"
+    die "readiness check failed"
   fi
   if ! warmup_checkout "$BENCH_BASE_URL" "$READY_CHECKOUT_RETRIES" "$READY_CHECKOUT_SLEEP"; then
-    die "readiness checkout warmup failed after ${READY_CHECKOUT_RETRIES} attempts"
+    die "readiness checkout warmup failed"
   fi
 }
 
 # ----------------------------
-# Netem helpers (profiles)
+# Netem helpers
 # ----------------------------
 apply_tc_cmd() {
-  local pod="$1"
-  shift
+  local pod="$1"; shift
   local extra=()
-  if [[ -n "${NETEM_CONTAINER//[[:space:]]/}" ]]; then
-    extra+=("-c" "$NETEM_CONTAINER")
-  fi
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$KUBECTL_EXEC_TIMEOUT" kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- "$@" >/dev/null 2>&1 || true
-  else
-    kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- "$@" >/dev/null 2>&1 || true
-  fi
+  [[ -n "$NETEM_CONTAINER" ]] && extra+=("-c" "$NETEM_CONTAINER")
+  run_with_timeout "$KUBECTL_EXEC_TIMEOUT" kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- "$@" >/dev/null 2>&1 || true
 }
 
-# Like apply_tc_cmd, but fails the whole script if the tc command cannot be applied.
 apply_tc_cmd_strict() {
-  local pod="$1"
-  shift
+  local pod="$1"; shift
   local extra=()
-  if [[ -n "${NETEM_CONTAINER//[[:space:]]/}" ]]; then
-    extra+=("-c" "$NETEM_CONTAINER")
-  fi
-
-  local out=""
-  if command -v timeout >/dev/null 2>&1; then
-    if ! out="$(timeout "$KUBECTL_EXEC_TIMEOUT" kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- "$@" 2>&1)"; then
-      log "tc failed on pod=$pod (container=${NETEM_CONTAINER:-<default>}): $*"
-      echo "$out" >&2
-      die "failed to apply netem (tc) on pod $pod"
-    fi
-  else
-    if ! out="$(kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- "$@" 2>&1)"; then
-      log "tc failed on pod=$pod (container=${NETEM_CONTAINER:-<default>}): $*"
-      echo "$out" >&2
-      die "failed to apply netem (tc) on pod $pod"
-    fi
+  [[ -n "$NETEM_CONTAINER" ]] && extra+=("-c" "$NETEM_CONTAINER")
+  if ! run_with_timeout "$KUBECTL_EXEC_TIMEOUT" kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- "$@" >/dev/null; then
+    die "failed to apply netem on pod $pod"
   fi
 }
 
 pod_has_tc() {
   local pod="$1"
   local extra=()
-  if [[ -n "${NETEM_CONTAINER//[[:space:]]/}" ]]; then
-    extra+=("-c" "$NETEM_CONTAINER")
-  fi
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$KUBECTL_EXEC_TIMEOUT" kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- sh -c "command -v tc >/dev/null 2>&1" >/dev/null 2>&1
-  else
-    kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- sh -c "command -v tc >/dev/null 2>&1" >/dev/null 2>&1
-  fi
+  [[ -n "$NETEM_CONTAINER" ]] && extra+=("-c" "$NETEM_CONTAINER")
+  run_with_timeout "$KUBECTL_EXEC_TIMEOUT" kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- sh -c "command -v tc >/dev/null" >/dev/null 2>&1
 }
 
 ensure_tc_or_warn() {
   local pod="$1"
   local selector="$2"
-  if pod_has_tc "$pod"; then
-    return 0
-  fi
+  if pod_has_tc "$pod"; then return 0; fi
   if [[ "$NETEM_REQUIRE_TC" == "1" ]]; then
-    die "tc not found in pod $pod (selector=$selector, container=${NETEM_CONTAINER:-<default>}); either add a netem sidecar (iproute2+NET_ADMIN) or set NETEM_REQUIRE_TC=0"
+    die "tc not found in pod $pod (selector=$selector)"
   fi
-  log "WARNING: tc not found in pod $pod (selector=$selector); skipping netem"
+  log "WARNING: tc not found in pod $pod; skipping netem"
   return 1
 }
 
@@ -693,18 +553,14 @@ apply_netem_profile() {
   local jitter_ms="$3"
 
   local selector
-  local pod
   for selector in "${NETEM_TARGET_SELECTORS[@]}"; do
     selector="$(trim "$selector")"
-    [[ -n "${selector//[[:space:]]/}" ]] || continue
+    [[ -n "$selector" ]] || continue
     local pod_count=0
     for pod in $(list_pods_for "$selector" 1); do
       pod_count=$((pod_count + 1))
-      if ! ensure_tc_or_warn "$pod" "$selector"; then
-        continue
-      fi
+      if ! ensure_tc_or_warn "$pod" "$selector"; then continue; fi
       apply_tc_cmd "$pod" tc qdisc del dev eth0 root
-
       case "$profile" in
         normal)
           if [[ "$delay_ms" != "0" || "$jitter_ms" != "0" ]]; then
@@ -712,24 +568,13 @@ apply_netem_profile() {
           fi
           ;;
         lossy)
-          apply_tc_cmd_strict "$pod" tc qdisc replace dev eth0 root netem \
-            delay "${delay_ms}ms" "${jitter_ms}ms" \
-            loss "${LOSSY_LOSS_PCT}%" \
-            duplicate "${LOSSY_DUP_PCT}%" \
-            reorder "${LOSSY_REORDER_PCT}%" "${LOSSY_REORDER_CORR}%"
+          apply_tc_cmd_strict "$pod" tc qdisc replace dev eth0 root netem delay "${delay_ms}ms" "${jitter_ms}ms" loss "${LOSSY_LOSS_PCT}%" duplicate "${LOSSY_DUP_PCT}%" reorder "${LOSSY_REORDER_PCT}%" "${LOSSY_REORDER_CORR}%"
           ;;
         congested)
-          apply_tc_cmd_strict "$pod" tc qdisc replace dev eth0 root handle 1: netem \
-            delay "${delay_ms}ms" "${jitter_ms}ms" \
-            loss "${CONGEST_LOSS_PCT}%"
-          apply_tc_cmd_strict "$pod" tc qdisc replace dev eth0 parent 1:1 handle 10: tbf \
-            rate "$CONGEST_RATE" \
-            burst "$CONGEST_BURST" \
-            limit "$CONGEST_LIMIT_PKTS"
+          apply_tc_cmd_strict "$pod" tc qdisc replace dev eth0 root handle 1: netem delay "${delay_ms}ms" "${jitter_ms}ms" loss "${CONGEST_LOSS_PCT}%"
+          apply_tc_cmd_strict "$pod" tc qdisc replace dev eth0 parent 1:1 handle 10: tbf rate "$CONGEST_RATE" burst "$CONGEST_BURST" limit "$CONGEST_LIMIT_PKTS"
           ;;
-        *)
-          die "unknown net profile: $profile"
-          ;;
+        *) die "unknown net profile: $profile" ;;
       esac
     done
     log "Netem applied on selector=$selector pods=$pod_count profile=$profile"
@@ -741,42 +586,30 @@ validate_netem_profile() {
   local delay_ms="$2"
   local jitter_ms="$3"
   local selector
-  local pod
   for selector in "${NETEM_TARGET_SELECTORS[@]}"; do
     selector="$(trim "$selector")"
-    [[ -n "${selector//[[:space:]]/}" ]] || continue
+    [[ -n "$selector" ]] || continue
     for pod in $(list_pods_for "$selector"); do
       ensure_tc_or_warn "$pod" "$selector"
-      if [[ "$profile" == "normal" && "$delay_ms" == "0" && "$jitter_ms" == "0" ]]; then
-        continue
-      fi
+      if [[ "$profile" == "normal" && "$delay_ms" == "0" && "$jitter_ms" == "0" ]]; then continue; fi
       local qdisc
       qdisc="$(kube_exec -n "$NAMESPACE" -c "$NETEM_CONTAINER" "$pod" -- tc qdisc show dev eth0 2>/dev/null || true)"
-      if [[ "$qdisc" != *"netem"* ]]; then
-        die "netem not applied on pod $pod (selector=$selector); qdisc='$qdisc'"
-      fi
-      if [[ "$profile" != "normal" && "$qdisc" != *"delay"* ]]; then
-        die "netem delay missing on pod $pod (selector=$selector); qdisc='$qdisc'"
-      fi
+      if [[ "$qdisc" != *"netem"* ]]; then die "netem not applied on pod $pod"; fi
     done
   done
 }
+
 clear_netem() {
   local ignore_errors="${1:-0}"
   local selector
-  local pod
   for selector in "${NETEM_TARGET_SELECTORS[@]}"; do
     selector="$(trim "$selector")"
-    [[ -n "${selector//[[:space:]]/}" ]] || continue
+    [[ -n "$selector" ]] || continue
     for pod in $(list_pods_for "$selector"); do
       if [[ "$ignore_errors" == "1" ]]; then
-        if ! pod_has_tc "$pod"; then
-          continue
-        fi
+        if ! pod_has_tc "$pod"; then continue; fi
       else
-        if ! ensure_tc_or_warn "$pod" "$selector"; then
-          continue
-        fi
+        if ! ensure_tc_or_warn "$pod" "$selector"; then continue; fi
       fi
       apply_tc_cmd "$pod" tc qdisc del dev eth0 root
     done
@@ -784,23 +617,16 @@ clear_netem() {
 }
 
 sum_net_bytes() {
-  local direction="$1"  # rx or tx
+  local direction="$1"
   local total=0
   local selector
-  local pod
   for selector in "${METRICS_SELECTORS[@]}"; do
     selector="$(trim "$selector")"
-    [[ -n "${selector//[[:space:]]/}" ]] || continue
+    [[ -n "$selector" ]] || continue
     for pod in $(list_pods_for "$selector"); do
       local val
-      if command -v timeout >/dev/null 2>&1; then
-        val="$(timeout "$KUBECTL_EXEC_TIMEOUT" kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" -- cat "/sys/class/net/eth0/statistics/${direction}_bytes" 2>/dev/null || echo "")"
-      else
-        val="$(kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" -- cat "/sys/class/net/eth0/statistics/${direction}_bytes" 2>/dev/null || echo "")"
-      fi
-      if [[ -n "$val" ]]; then
-        total=$((total + val))
-      fi
+      val="$(run_with_timeout "$KUBECTL_EXEC_TIMEOUT" kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" -- cat "/sys/class/net/eth0/statistics/${direction}_bytes" 2>/dev/null || echo "")"
+      if [[ -n "$val" ]]; then total=$((total + val)); fi
     done
   done
   echo "$total"
@@ -811,124 +637,51 @@ capture_netem_state() {
   local latency_ms="$2"
   local jitter_ms="$3"
   local log_file="${NETEM_VALIDATE_LOG_DIR}/netem-${timestamp}-${profile}-${latency_ms}ms-${jitter_ms}ms.log"
-
   {
     echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "profile=$profile"
     echo "latency_ms=$latency_ms"
     echo "jitter_ms=$jitter_ms"
-    echo "netem_selectors=${NETEM_TARGET_SELECTORS[*]}"
-    echo
     local selector
-    local pod
     for selector in "${NETEM_TARGET_SELECTORS[@]}"; do
-      selector="$(trim "$selector")"
-      [[ -n "${selector//[[:space:]]/}" ]] || continue
       echo "selector=$selector"
       for pod in $(list_pods_for "$selector"); do
         echo "pod=$pod"
-        if ! ensure_tc_or_warn "$pod" "$selector"; then
-          echo "tc not found in pod; skipping tc qdisc inspection"
-          echo "---"
-          continue
-        fi
+        if ! ensure_tc_or_warn "$pod" "$selector"; then continue; fi
         local extra=()
-        if [[ -n "${NETEM_CONTAINER//[[:space:]]/}" ]]; then
-          extra+=("-c" "$NETEM_CONTAINER")
-        fi
-        if command -v timeout >/dev/null 2>&1; then
-          timeout "$KUBECTL_EXEC_TIMEOUT" kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- tc qdisc show dev eth0 || true
-          timeout "$KUBECTL_EXEC_TIMEOUT" kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- tc -s qdisc show dev eth0 || true
-        else
-          kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- tc qdisc show dev eth0 || true
-          kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- tc -s qdisc show dev eth0 || true
-        fi
+        [[ -n "$NETEM_CONTAINER" ]] && extra+=("-c" "$NETEM_CONTAINER")
+        run_with_timeout "$KUBECTL_EXEC_TIMEOUT" kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- tc qdisc show dev eth0 || true
         echo "---"
       done
       echo
     done
-
-    if [[ "${NETEM_VALIDATE}" == "1" && ( ${#PROBE_SERVICES[@]} -gt 0 || ${#PROBE_SERVICE_HOSTS[@]} -gt 0 ) ]]; then
-      if [[ ${#PROBE_SERVICE_HOSTS[@]} -gt 0 ]]; then
-        echo "probe_service_hosts=${PROBE_SERVICE_HOSTS[*]}"
-      else
-        echo "probe_services=${PROBE_SERVICES[*]}"
-      fi
-      probe_name="netem-probe-$(date +%s%N | tail -c 8)"
-      kube run -n "$NAMESPACE" --rm -i "$probe_name" --restart=Never --image "$PROBE_IMAGE" --command -- sh -c "
-set -e
-echo \"---- resolv.conf ----\"
-cat /etc/resolv.conf || true
-if [ ${#PROBE_SERVICE_HOSTS[@]} -gt 0 ]; then
-  targets=\"${PROBE_SERVICE_HOSTS[*]}\"
-else
-  targets=\"\"
-  for svc in ${PROBE_SERVICES[*]}; do
-    # Use service names as-is. Inside the namespace, kube-dns search paths resolve them.
-    targets=\"\$targets \$svc\"
-  done
-fi
-
-for target in \$targets; do
-  echo \"=== \$target ===\"
-  host=\"\$target\"
-  if echo \"\$host\" | grep -q \"^http\"; then
-    host=\"\${host#http://}\"
-    host=\"\${host#https://}\"
-    host=\"\${host%%/*}\"
-  fi
-  ping -c 5 \"\$host\" || true
-  if echo \"\$target\" | grep -q \"^http\"; then
-    wget -qO- --timeout=2 \"\$target\" >/dev/null 2>&1 || true
-  else
-    wget -qO- --timeout=2 \"http://\$target:8080/health\" >/dev/null 2>&1 || true
-  fi
-done
-" || true
-    fi
   } >"$log_file" 2>&1
-
   echo "$log_file"
 }
 
 METRICS_WARNING_EMITTED="0"
-
 start_metrics_sampler() {
   local sample_file="$1"
   local interval="$2"
   : >"$sample_file"
-
+  # FIX: Redirect entire subshell to avoid leakage to stdout
   (
     while true; do
       local selector
       for selector in "${METRICS_SELECTORS[@]}"; do
         selector="$(trim "$selector")"
-        [[ -n "${selector//[[:space:]]/}" ]] || continue
+        [[ -n "$selector" ]] || continue
         local output
-        if command -v timeout >/dev/null 2>&1; then
-          output="$(timeout "$KUBECTL_EXEC_TIMEOUT" kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" top pods -n "$NAMESPACE" -l "$selector" --no-headers 2>&1 || true)"
-        else
-          output="$(kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" top pods -n "$NAMESPACE" -l "$selector" --no-headers 2>&1 || true)"
-        fi
-        if [[ -z "$output" ]]; then
+        output="$(run_with_timeout "$KUBECTL_EXEC_TIMEOUT" kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" top pods -n "$NAMESPACE" -l "$selector" --no-headers 2>&1 || true)"
+        if [[ -z "$output" ]]; then continue; fi
+        if [[ "$output" == *"Metrics API not available"* ]]; then
           continue
         fi
-        if [[ "$output" == *"Metrics API not available"* || "$output" == *"metrics.k8s.io"* ]]; then
-          if [[ "$METRICS_WARNING_EMITTED" == "0" ]]; then
-            log "WARNING: Metrics API not available (kubectl top returned: $output)"
-            METRICS_WARNING_EMITTED="1"
-          fi
-          continue
-        fi
-        echo "$output" | awk -v sel="$selector" -v ts="$(date +%s)" '{
-          gsub("m","",$2); gsub("Mi","",$3);
-          cpu+=$2; mem+=$3
-        } END {printf "%s\t%s\t%d\t%d\n", ts, sel, cpu, mem}'
-      done >>"$sample_file"
+        echo "$output" | awk -v sel="$selector" -v ts="$(date +%s)" '{gsub("m","",$2); gsub("Mi","",$3); cpu+=$2; mem+=$3} END {printf "%s\t%s\t%d\t%d\n", ts, sel, cpu, mem}'
+      done
       sleep "$interval"
     done
-  ) &
-
+  ) >"$sample_file" 2>&1 &
   echo $!
 }
 
@@ -942,60 +695,37 @@ stop_metrics_sampler() {
 
 summarize_metrics_samples() {
   local sample_file="$1"
-  if [[ ! -s "$sample_file" ]]; then
-    echo ""
-    return
-  fi
+  if [[ ! -s "$sample_file" ]]; then echo ""; return; fi
   "$PYTHON_BIN" -c '
 import json, sys
 from collections import defaultdict
-
 data = defaultdict(lambda: {"cpu": [], "mem": []})
 with open(sys.argv[1], "r", encoding="utf-8") as fh:
     for line in fh:
         parts = line.strip().split("\t")
-        if len(parts) != 4:
-            continue
+        if len(parts) != 4: continue
         _, selector, cpu, mem = parts
         try:
             data[selector]["cpu"].append(int(cpu))
             data[selector]["mem"].append(int(mem))
-        except ValueError:
-            continue
-
+        except ValueError: continue
 def stats(values):
-    if not values:
-        return {"avg": None, "max": None, "samples": 0}
-    return {
-        "avg": round(sum(values) / len(values), 2),
-        "max": max(values),
-        "samples": len(values),
-    }
-
+    if not values: return {"avg": None, "max": None, "samples": 0}
+    return {"avg": round(sum(values) / len(values), 2), "max": max(values), "samples": len(values)}
 selectors = {}
 total_cpu = []
 total_mem = []
 for selector, vals in data.items():
-    selectors[selector] = {
-        "cpu_millicores": stats(vals["cpu"]),
-        "memory_mib": stats(vals["mem"]),
-    }
+    selectors[selector] = {"cpu_millicores": stats(vals["cpu"]), "memory_mib": stats(vals["mem"])}
     total_cpu.extend(vals["cpu"])
     total_mem.extend(vals["mem"])
-
-summary = {
-    "selectors": selectors,
-    "total": {
-        "cpu_millicores": stats(total_cpu),
-        "memory_mib": stats(total_mem),
-    },
-}
+summary = {"selectors": selectors, "total": {"cpu_millicores": stats(total_cpu), "memory_mib": stats(total_mem)}}
 print(json.dumps(summary, separators=(",", ":")))
 ' "$sample_file"
 }
 
 # ----------------------------
-# Port-forward management for order-service (restart after TX_MODE switch)
+# Port-forward management
 # ----------------------------
 ORDER_PF_PID=""
 ORDER_PF_LOG=""
@@ -1007,134 +737,49 @@ have_port_listener() {
     ss -ltn | awk '{print $4}' | grep -qE "(:|\\])${port}$"
     return $?
   fi
-  if command -v lsof >/dev/null 2>&1; then
-    lsof -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
-    return $?
-  fi
-  return 1
-}
-
-check_tcp_open() {
-  local host="$1"
-  local port="$2"
-  if command -v timeout >/dev/null 2>&1; then
-    timeout 1 bash -c "cat < /dev/null > /dev/tcp/${host}/${port}" >/dev/null 2>&1
-    return $?
-  fi
-  bash -c "cat < /dev/null > /dev/tcp/${host}/${port}" >/dev/null 2>&1
+  lsof -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
   return $?
 }
 
-pf_log_has_disconnects() {
-  if [[ -z "$ORDER_PF_LOG" || ! -f "$ORDER_PF_LOG" ]]; then
-    return 1
-  fi
-  local total_lines
-  total_lines="$(wc -l < "$ORDER_PF_LOG" | tr -d ' ')"
-  local new_lines=$((total_lines - ORDER_PF_LOG_LINES))
-  if (( new_lines <= 0 )); then
-    return 1
-  fi
-  ORDER_PF_LOG_LINES="$total_lines"
-  if tail -n "$new_lines" "$ORDER_PF_LOG" | grep -Eiq "lost connection to pod|network namespace.*closed"; then
-    return 0
-  fi
-  return 1
-}
-
-kill_existing_order_pf() {
-  # Kill only port-forward processes that match namespace + svc + local port mapping
-  # This is intentionally narrow to avoid killing other port-forwards.
-  pkill -f "kubectl.*port-forward.*-n[[:space:]]+$NAMESPACE.*svc/$ORDER_SERVICE_NAME[[:space:]]+$ORDER_PF_PORT:8080" >/dev/null 2>&1 || true
-  pkill -f "kubectl.*port-forward.*-n[[:space:]]+$NAMESPACE.*svc/$ORDER_SERVICE_NAME[[:space:]]+$ORDER_PF_PORT:8080" >/dev/null 2>&1 || true
-}
-
 stop_order_pf() {
-  if [[ -n "${ORDER_PF_PID//[[:space:]]/}" ]]; then
-    if kill -0 "$ORDER_PF_PID" >/dev/null 2>&1; then
-      kill "$ORDER_PF_PID" >/dev/null 2>&1 || true
-      local i
-      for i in $(seq 1 20); do
-        if ! kill -0 "$ORDER_PF_PID" >/dev/null 2>&1; then
-          break
-        fi
-        sleep 0.1
-      done
-      if kill -0 "$ORDER_PF_PID" >/dev/null 2>&1; then
-        kill -9 "$ORDER_PF_PID" >/dev/null 2>&1 || true
-      fi
-    fi
+  if [[ -n "$ORDER_PF_PID" ]]; then
+    kill "$ORDER_PF_PID" >/dev/null 2>&1 || true
     wait "$ORDER_PF_PID" >/dev/null 2>&1 || true
   fi
   ORDER_PF_PID=""
-  ORDER_PF_LOG=""
-  ORDER_PF_LOG_LINES=0
-  # also clean up any matching stray processes
-  kill_existing_order_pf
+  pkill -f "kubectl.*port-forward.*-n[[:space:]]+$NAMESPACE.*svc/$ORDER_SERVICE_NAME[[:space:]]+$ORDER_PF_PORT:8080" >/dev/null 2>&1 || true
 }
 
 start_order_pf() {
   stop_order_pf
-
-  # ensure port is not occupied by another process
   if have_port_listener "$ORDER_PF_PORT"; then
-    # If it's our old port-forward, kill it; otherwise fail clearly
-    kill_existing_order_pf
-    sleep 0.2
+    die "local port $ORDER_PF_PORT is already in use"
   fi
-  if have_port_listener "$ORDER_PF_PORT"; then
-    die "local port $ORDER_PF_PORT is already in use; stop conflicting process or set ORDER_PF_PORT=18080"
-  fi
-
   ORDER_PF_LOG="${ORDER_PF_LOG_DIR}/order-${timestamp}-txmode.log"
   : > "$ORDER_PF_LOG" || true
-
   log "Starting port-forward for order: svc/$ORDER_SERVICE_NAME -> ${ORDER_PF_ADDR}:${ORDER_PF_PORT}"
   kube -n "$NAMESPACE" port-forward "svc/$ORDER_SERVICE_NAME" "${ORDER_PF_PORT}:8080" --address "$ORDER_PF_ADDR" >"$ORDER_PF_LOG" 2>&1 &
   ORDER_PF_PID="$!"
-  ORDER_PF_LOG_LINES=0
-
-  # wait until port starts listening or process dies
-  local i
-  for i in $(seq 1 80); do
-    if have_port_listener "$ORDER_PF_PORT" || check_tcp_open "$ORDER_PF_ADDR" "$ORDER_PF_PORT"; then
-      log "Port-forward is listening on ${ORDER_PF_ADDR}:${ORDER_PF_PORT}"
+  for _ in $(seq 1 80); do
+    if have_port_listener "$ORDER_PF_PORT"; then
+      sleep 1 # Give it a second to be truly ready
       return 0
     fi
-    if ! kill -0 "$ORDER_PF_PID" >/dev/null 2>&1; then
-      log "Port-forward process exited early; last log lines:"
-      tail -n 80 "$ORDER_PF_LOG" >&2 || true
-      die "order port-forward failed to start"
-    fi
+    if ! kill -0 "$ORDER_PF_PID" >/dev/null 2>&1; then die "order port-forward failed to start"; fi
     sleep 0.1
   done
-
-  log "Timeout while waiting for port-forward to listen; last log lines:"
-  tail -n 80 "$ORDER_PF_LOG" >&2 || true
-  die "order port-forward did not start listening on ${ORDER_PF_ADDR}:${ORDER_PF_PORT}"
+  die "order port-forward timed out"
 }
 
 restart_order_pf() {
-  log "Restarting order port-forward"
   stop_order_pf
   start_order_pf
 }
 
 ensure_order_pf() {
-  if [[ "$MANAGE_ORDER_PF" != "1" ]]; then
-    return 0
-  fi
-  if [[ -z "$ORDER_PF_PID" || ! -e "/proc/$ORDER_PF_PID" ]]; then
-    restart_order_pf
-    return 0
-  fi
-  if ! have_port_listener "$ORDER_PF_PORT" && ! check_tcp_open "$ORDER_PF_ADDR" "$ORDER_PF_PORT"; then
-    restart_order_pf
-    return 0
-  fi
-  if pf_log_has_disconnects; then
-    restart_order_pf
-  fi
+  if [[ "$MANAGE_ORDER_PF" != "1" ]]; then return 0; fi
+  if [[ -z "$ORDER_PF_PID" ]] || ! kill -0 "$ORDER_PF_PID" >/dev/null 2>&1; then restart_order_pf; return 0; fi
+  if ! have_port_listener "$ORDER_PF_PORT"; then restart_order_pf; fi
 }
 
 # ----------------------------
@@ -1144,26 +789,16 @@ extract_first_json_object() {
   "$PYTHON_BIN" -c '
 import json, sys
 text = sys.stdin.read()
-if not text.strip():
-    sys.stderr.write("ERROR: empty bench-runner output\n")
-    sys.exit(2)
-
+if not text.strip(): sys.exit(2)
 dec = json.JSONDecoder()
 for i, ch in enumerate(text):
-    if ch != "{":
-        continue
+    if ch != "{": continue
     try:
         obj, _ = dec.raw_decode(text[i:])
         if isinstance(obj, dict):
             print(json.dumps(obj, separators=(",", ":")))
             sys.exit(0)
-    except Exception:
-        pass
-
-sys.stderr.write("ERROR: no JSON object found in bench-runner output\n")
-sys.stderr.write("----- output prefix -----\n")
-sys.stderr.write(text[:1200] + "\n")
-sys.stderr.write("----- end prefix -----\n")
+    except Exception: pass
 sys.exit(3)
 '
 }
@@ -1173,57 +808,35 @@ run_bench_json() {
   local tx="$2"
   local conc="$3"
   local log_file="$4"
-  local mode="$5"
-  local profile="$6"
   local run_label="$7"
-
   local args=("$BENCH_BIN" -base-url "$base_url" -total "$tx" -concurrency "$conc" -timeout "$BENCH_REQUEST_TIMEOUT")
   if [[ "$AWAIT_FINAL" == "1" ]]; then
     args+=(-await-final -final-timeout "$FINAL_TIMEOUT" -final-interval "$FINAL_INTERVAL" -final-statuses "$FINAL_STATUSES")
   fi
   local out_file
   out_file="$(mktemp)"
-  local bench_pid
-  local start_ts
   local timeout_s
-  start_ts="$(date +%s)"
   timeout_s="$(duration_seconds "$BENCH_RUN_TIMEOUT")"
-  if [[ "$timeout_s" -le 0 ]]; then
-    die "invalid BENCH_RUN_TIMEOUT: $BENCH_RUN_TIMEOUT"
-  fi
   "${args[@]}" >"$out_file" 2>"$log_file" &
-  bench_pid=$!
-
+  local bench_pid=$!
+  local start_ts
+  start_ts="$(date +%s)"
   while kill -0 "$bench_pid" >/dev/null 2>&1; do
-    local now
-    now="$(date +%s)"
-    local elapsed=$((now - start_ts))
-    if (( elapsed > timeout_s )); then
-      log "bench-runner timeout after ${elapsed}s (limit ${BENCH_RUN_TIMEOUT}); killing pid=$bench_pid"
-      kill "$bench_pid" >/dev/null 2>&1 || true
-      sleep 0.2
+    if (( $(date +%s) - start_ts > timeout_s )); then
       kill -9 "$bench_pid" >/dev/null 2>&1 || true
-      wait "$bench_pid" 2>/dev/null || true
       rm -f "$out_file"
       return 1
     fi
-    log "HEARTBEAT mode=$mode profile=$profile run=$run_label elapsed=${elapsed}s"
     sleep "$HEARTBEAT_INTERVAL"
   done
-
-  if ! wait "$bench_pid"; then
-    log "bench-runner failed; see $log_file"
-    rm -f "$out_file"
-    return 1
-  fi
-  local out
-  out="$(cat "$out_file")"
+  wait "$bench_pid" || {
+    # LOG DEBUG: if bench-runner failed, print tail of log to see WHY
+    log "bench-runner failed/exited. Last 20 lines of $log_file:"
+    tail -n 20 "$log_file" >&2
+    rm -f "$out_file"; return 1;
+  }
+  cat "$out_file" | extract_first_json_object
   rm -f "$out_file"
-  if [[ -z "${out//[[:space:]]/}" ]]; then
-    log "bench-runner produced empty output; see $log_file"
-    return 1
-  fi
-  printf '%s' "$out" | extract_first_json_object
 }
 
 run_bench_json_with_retry() {
@@ -1234,85 +847,53 @@ run_bench_json_with_retry() {
   local mode="$5"
   local profile="$6"
   local run_label="$7"
-
-  local attempt
   for attempt in 1 2; do
     if bench_json="$(run_bench_json "$base_url" "$tx" "$conc" "$log_file" "$mode" "$profile" "$run_label")"; then
-      if [[ -n "${bench_json//[[:space:]]/}" ]]; then
-        printf '%s' "$bench_json"
-        return 0
-      fi
-      log "bench-runner returned empty JSON payload; see $log_file"
+      [[ -n "$bench_json" ]] && echo "$bench_json" && return 0
     fi
-    if [[ "$MANAGE_ORDER_PF" == "1" ]]; then
-      log "bench-runner failed (attempt $attempt); restarting port-forward and retrying once"
-      restart_order_pf
-    fi
+    [[ "$MANAGE_ORDER_PF" == "1" ]] && restart_order_pf
     sleep 0.5
   done
-
   return 1
 }
 
 bench_invalid_reason() {
   "$PYTHON_BIN" -c '
 import json, sys
-d = json.load(sys.stdin)
-total = d.get("total_requests", 0) or 0
-errors = d.get("error_requests", 0) or 0
-status_counts = d.get("status_counts", {}) or {}
-error_classes = d.get("error_classes", {}) or {}
-transport = error_classes.get("transport", 0) or 0
-status_zero = status_counts.get("0", 0) or 0
-
-if total > 0 and errors == total and (transport == total or status_zero == total):
-    print("transport_all")
-    sys.exit(0)
-if total > 0 and errors == total and status_zero == total:
-    print("status_zero_all")
-    sys.exit(0)
-print("")
-' 
+try:
+    d = json.load(sys.stdin)
+    total = d.get("total_requests", 0) or 0
+    errors = d.get("error_requests", 0) or 0
+    err_cls = d.get("error_classes", {}) or {}
+    status_cnt = d.get("status_counts", {}) or {}
+    if total > 0 and errors == total and (err_cls.get("transport",0)==total or status_cnt.get("0",0)==total):
+        print("transport_all")
+        sys.exit(0)
+except: pass
+'
 }
 
 smoke_check() {
   local base_url="$1"
   local order_id
-  local idempotency_key
   order_id="$($PYTHON_BIN -c 'import uuid; print(uuid.uuid4())')"
-  idempotency_key="$($PYTHON_BIN -c 'import uuid; print(uuid.uuid4())')"
-
-  local payload
-  payload="$($PYTHON_BIN -c "import json; print(json.dumps({'order_id': '$order_id', 'total': 1200, 'items': [{'product_id': 'sku-1', 'quantity': 1}]}))")"
-
-  local http_code
-  http_code="$(curl -s -o /dev/null -w '%{http_code}' \
-    -H 'Content-Type: application/json' \
-    -H "Idempotency-Key: $idempotency_key" \
-    -d "$payload" \
-    "${base_url%/}/checkout" || echo "000")"
-
-  log "Smoke check /checkout -> HTTP $http_code"
-  if [[ "$http_code" != 2* ]]; then
-    die "smoke check failed with HTTP $http_code"
-  fi
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "{\"order_id\":\"$order_id\",\"total\":1200,\"items\":[{\"product_id\":\"sku-1\",\"quantity\":1}]}" "${base_url%/}/checkout" || echo "000")"
+  log "Smoke check /checkout -> HTTP $code"
+  if [[ "$code" != 2* ]]; then die "smoke check failed"; fi
 }
 
-# ----------------------------
-# Cleanup
-# ----------------------------
+METRICS_PID=""
 cleanup() {
+  [[ -n "$METRICS_PID" ]] && kill "$METRICS_PID" >/dev/null 2>&1 || true
   clear_netem 1 || true
-  if [[ "$MANAGE_ORDER_PF" == "1" ]]; then
-    stop_order_pf || true
-  fi
+  [[ "$MANAGE_ORDER_PF" == "1" ]] && stop_order_pf || true
 }
 trap cleanup EXIT INT TERM
 
 # ----------------------------
-# Prepare base url used by bench
+# Prepare URL
 # ----------------------------
-# For reliability: always use 127.0.0.1 with managed port-forward
 BENCH_BASE_URL="$ORDER_BASE_URL"
 if [[ "$MANAGE_ORDER_PF" == "1" ]]; then
   BENCH_BASE_URL="http://${ORDER_PF_ADDR}:${ORDER_PF_PORT}"
@@ -1320,31 +901,19 @@ fi
 log "Bench base url: $BENCH_BASE_URL"
 
 # ----------------------------
-# Main loop: TX_MODE -> net profile -> replicas -> latency/jitter -> tx
+# Main Loop
 # ----------------------------
 for mode in "${TX_MODES[@]}"; do
   log "Switching TX_MODE to '$mode'"
-
-  if [[ "$MANAGE_ORDER_PF" == "1" ]]; then
-    # stop PF BEFORE rollout to avoid 'namespace closed' noise and avoid dead processes
-    stop_order_pf
-  fi
-
+  if [[ "$MANAGE_ORDER_PF" == "1" ]]; then stop_order_pf; fi
   kube -n "$NAMESPACE" set env "deployment/${DEPLOYMENT}" "TX_MODE=${mode}" >/dev/null
   kube -n "$NAMESPACE" rollout restart "deployment/${DEPLOYMENT}" >/dev/null
   ensure_rollout
-  wait_pods_stable "$PODS_READY_TIMEOUT_SECONDS"
+  wait_pods_stable
   sleep 5
-
-  if [[ "$MANAGE_ORDER_PF" == "1" ]]; then
-    start_order_pf
-  fi
-
+  [[ "$MANAGE_ORDER_PF" == "1" ]] && start_order_pf
   ensure_readiness
-
-  if [[ "$SMOKE" == "1" ]]; then
-    smoke_check "$BENCH_BASE_URL"
-  fi
+  [[ "$SMOKE" == "1" ]] && smoke_check "$BENCH_BASE_URL"
 
   for profile in "${NET_PROFILES[@]}"; do
     for replicas in "${REPLICAS_LIST[@]}"; do
@@ -1360,64 +929,50 @@ for mode in "${TX_MODES[@]}"; do
             effective_jitter="$CONGEST_JITTER_MS"
           fi
 
-          # Apply network emulation profile on pods
           apply_netem_profile "$profile" "$effective_latency" "$effective_jitter"
           sleep "$WAIT_AFTER_NETEM"
           validate_netem_profile "$profile" "$effective_latency" "$effective_jitter"
           netem_log="$(capture_netem_state "$profile" "$effective_latency" "$effective_jitter")"
 
           if [[ "$WARMUP_ENABLED" == "1" && "$WARMUP_TX" != "0" ]]; then
-            log "WARMUP mode=$mode profile=$profile replicas=$replicas concurrency=$WARMUP_CONCURRENCY tx=$WARMUP_TX"
-            warmup_log="${BENCH_LOG_DIR}/warmup-${timestamp}-${mode}-${profile}-r${replicas}.log"
-            run_bench_json_with_retry "$BENCH_BASE_URL" "$WARMUP_TX" "$WARMUP_CONCURRENCY" "$warmup_log" "$mode" "$profile" "warmup" >/dev/null || true
+             run_bench_json_with_retry "$BENCH_BASE_URL" "$WARMUP_TX" "$WARMUP_CONCURRENCY" "${BENCH_LOG_DIR}/warmup.log" "$mode" "$profile" "warmup" >/dev/null || true
           fi
 
           for tx in "${TX_COUNTS[@]}"; do
             for conc in "${CONCURRENCY_LIST[@]}"; do
               for run_id in $(seq 1 "$BENCH_RUNS_PER_POINT"); do
-                log "RUN mode=$mode profile=$profile replicas=$replicas conc=$conc run=${run_id}/${BENCH_RUNS_PER_POINT} latency=${effective_latency}ms jitter=${effective_jitter}ms tx=$tx"
-
+                log "RUN mode=$mode profile=$profile r=$replicas c=$conc run=${run_id} L=${effective_latency}ms"
                 ensure_order_pf
                 net_before_rx="$(sum_net_bytes rx)"
                 net_before_tx="$(sum_net_bytes tx)"
 
                 bench_log="${BENCH_LOG_DIR}/bench-${timestamp}-${mode}-${profile}-r${replicas}-tx${tx}-c${conc}-run${run_id}.log"
+                sample_file="${BENCH_LOG_DIR}/metrics-${timestamp}-${mode}-${profile}-r${replicas}-tx${tx}-c${conc}-run${run_id}.log"
+                METRICS_PID="$(start_metrics_sampler "$sample_file" "$METRICS_SAMPLE_INTERVAL")"
+
                 attempt=0
                 while true; do
                   attempt=$((attempt + 1))
-                  sample_file="${BENCH_LOG_DIR}/metrics-${timestamp}-${mode}-${profile}-r${replicas}-tx${tx}-c${conc}-run${run_id}-a${attempt}.log"
-                  metrics_pid="$(start_metrics_sampler "$sample_file" "$METRICS_SAMPLE_INTERVAL")"
-
-                  run_label="tx${tx}-c${conc}-run${run_id}"
-                  if ! bench_json="$(run_bench_json_with_retry "$BENCH_BASE_URL" "$tx" "$conc" "$bench_log" "$mode" "$profile" "$run_label")"; then
-                    stop_metrics_sampler "$metrics_pid"
-                    die "bench-runner failed after retry; see $bench_log"
+                  if ! bench_json="$(run_bench_json_with_retry "$BENCH_BASE_URL" "$tx" "$conc" "$bench_log" "$mode" "$profile" "run${run_id}")"; then
+                    stop_metrics_sampler "$METRICS_PID"
+                    die "bench-runner failed"
                   fi
-                  stop_metrics_sampler "$metrics_pid"
-
-                  if [[ -z "${bench_json//[[:space:]]/}" ]]; then
-                    die "bench-runner returned empty JSON after retry; see $bench_log"
-                  fi
-
-                  invalid_reason="$(printf '%s' "$bench_json" | bench_invalid_reason)"
-                  if [[ -z "${invalid_reason//[[:space:]]/}" ]]; then
-                    break
-                  fi
-                  log "Invalid run detected (${invalid_reason}); retrying after ${INVALID_RETRY_SLEEP}s (attempt ${attempt}/${INVALID_RETRY_LIMIT})"
-                  if (( attempt >= INVALID_RETRY_LIMIT )); then
-                    die "invalid run persisted after ${INVALID_RETRY_LIMIT} attempts; see $bench_log"
-                  fi
+                  invalid="$(printf '%s' "$bench_json" | bench_invalid_reason)"
+                  if [[ -z "$invalid" ]]; then break; fi
+                  log "Invalid run ($invalid), retrying..."
+                  if (( attempt >= INVALID_RETRY_LIMIT )); then die "invalid run persisted"; fi
                   sleep "$INVALID_RETRY_SLEEP"
                 done
+                stop_metrics_sampler "$METRICS_PID"
+                METRICS_PID=""
 
                 net_after_rx="$(sum_net_bytes rx)"
                 net_after_tx="$(sum_net_bytes tx)"
+                rx_delta=$((net_after_rx - net_before_rx))
+                tx_delta=$((net_after_tx - net_before_tx))
 
-            # IMPORTANT:
-            # Do NOT use:  printf '%s' "$bench_json" | python - <<'PY' ... PY
-            # Because `python -` reads the PROGRAM from stdin, so the piped JSON never reaches json.load(sys.stdin).
-            # Always use `python -c '...'` here so stdin remains the JSON stream.
-            bench_fields="$(printf '%s' "$bench_json" | "$PYTHON_BIN" -c '
+                # Safe python extraction
+                bench_fields="$(printf '%s' "$bench_json" | "$PYTHON_BIN" -c '
 import json, sys
 d = json.load(sys.stdin)
 avg = d.get("avg_latency_ms", 0)
@@ -1426,109 +981,74 @@ p99 = d.get("p99_latency_ms", 0)
 thr = d.get("throughput_rps", 0)
 err = d.get("error_requests", 0)
 dur = d.get("duration_seconds", 0)
-status_counts = d.get("status_counts", {})
-error_classes = d.get("error_classes", {})
-finalized = d.get("finalized_requests", 0)
-final_timeouts = d.get("final_timeouts", 0)
-first_error = (d.get("first_error", "") or "").replace("\n", " ").replace("\t", " ")
-print("{:.2f}\t{:.2f}\t{:.2f}\t{:.2f}\t{}\t{:.4f}\t{}\t{}\t{}\t{}\t{}".format(
-    avg, p95, p99, thr, err, dur,
-    json.dumps(status_counts, separators=(",", ":")),
-    json.dumps(error_classes, separators=(",", ":")),
-    finalized, final_timeouts,
-    first_error,
-))
+status = d.get("status_counts", {})
+ecls = d.get("error_classes", {})
+fin = d.get("finalized_requests", 0)
+fout = d.get("final_timeouts", 0)
+ferr = (d.get("first_error", "") or "").replace("\n", " ").replace("\t", " ")
+# Print Tab-Separated
+print(f"{avg}\t{p95}\t{p99}\t{thr}\t{err}\t{dur}\t{json.dumps(status)}\t{json.dumps(ecls)}\t{fin}\t{fout}\t{ferr}")
 ')"
 
+                # Use python to split safely (avoids spaces in JSON breaking awk)
+                read -r avg_lat p95_lat p99_lat thr err dur status ecls fin fout ferr <<< "$bench_fields"
 
-            avg_latency="$(echo "$bench_fields" | awk '{print $1}')"
-            p95_latency="$(echo "$bench_fields" | awk '{print $2}')"
-            p99_latency="$(echo "$bench_fields" | awk '{print $3}')"
-            throughput="$(echo "$bench_fields" | awk '{print $4}')"
-            errors="$(echo "$bench_fields" | awk '{print $5}')"
-            duration="$(echo "$bench_fields" | awk '{print $6}')"
-            status_counts="$(echo "$bench_fields" | cut -f7)"
-            error_classes="$(echo "$bench_fields" | cut -f8)"
-            finalized="$(echo "$bench_fields" | awk '{print $9}')"
-            final_timeouts="$(echo "$bench_fields" | awk '{print $10}')"
-            first_error="$(echo "$bench_fields" | cut -f11-)"
+                if [[ "$err" != "0" && -n "$ferr" ]]; then log "ERRORS: $ferr"; fi
 
-            if [[ "$errors" != "0" && -n "$first_error" ]]; then
-              log "ERRORS mode=$mode profile=$profile -> $first_error"
-            fi
+                metrics_summary="$(summarize_metrics_samples "$sample_file")"
+                # Resource stats
+                res_stats="$($PYTHON_BIN -c '
+import json,sys
+try:
+  d = json.loads(sys.argv[1]) if sys.argv[1] else {}
+  t = d.get("total", {})
+  c = t.get("cpu_millicores", {})
+  m = t.get("memory_mib", {})
+  print(f"{c.get("avg","")}/{c.get("max","")} {m.get("avg","")}/{m.get("max","")}")
+except: print("/ /")
+' "${metrics_summary:-null}")"
+                read -r cpu_stats mem_stats <<< "$res_stats"
 
-              metrics_summary="$(summarize_metrics_samples "$sample_file")"
-              if [[ -z "${metrics_summary//[[:space:]]/}" ]]; then
-                metrics_summary="null"
-              fi
-              cpu_avg=""
-              cpu_max=""
-              mem_avg=""
-              mem_max=""
-              if [[ -n "${metrics_summary//[[:space:]]/}" ]]; then
-                cpu_avg="$(echo "$metrics_summary" | "$PYTHON_BIN" -c 'import json,sys; d=json.load(sys.stdin); v=d.get("total",{}).get("cpu_millicores",{}).get("avg"); print("" if v is None else v)')"
-                cpu_max="$(echo "$metrics_summary" | "$PYTHON_BIN" -c 'import json,sys; d=json.load(sys.stdin); v=d.get("total",{}).get("cpu_millicores",{}).get("max"); print("" if v is None else v)')"
-                mem_avg="$(echo "$metrics_summary" | "$PYTHON_BIN" -c 'import json,sys; d=json.load(sys.stdin); v=d.get("total",{}).get("memory_mib",{}).get("avg"); print("" if v is None else v)')"
-                mem_max="$(echo "$metrics_summary" | "$PYTHON_BIN" -c 'import json,sys; d=json.load(sys.stdin); v=d.get("total",{}).get("memory_mib",{}).get("max"); print("" if v is None else v)')"
-              fi
+                # Bandwidth calc (safe division)
+                net_stats="$($PYTHON_BIN -c '
+import sys
+try:
+  rx = int(sys.argv[1])
+  tx = int(sys.argv[2])
+  dur = float(sys.argv[3])
+  if dur > 0:
+    print(f"{round((rx/dur)/1024,2)} {round((tx/dur)/1024,2)}")
+  else:
+    print("0 0")
+except: print("0 0")
+' "$rx_delta" "$tx_delta" "$dur")"
+                read -r rx_kbps tx_kbps <<< "$net_stats"
 
-            rx_delta=$((net_after_rx - net_before_rx))
-            tx_delta=$((net_after_tx - net_before_tx))
+                if [[ "$first_record" == true ]]; then first_record=false; else echo "," >> "$json_file"; fi
+                cat <<JSON >> "$json_file"
+  {
+    "tx_mode": "$mode", "net_profile": "$profile", "replicas": $replicas, "concurrency": $conc, "run_id": $run_id,
+    "transactions": $tx, "latency_ms": $effective_latency, "jitter_ms": $effective_jitter,
+    "bench": $bench_json, "resources": ${metrics_summary:-null},
+    "network": {"rx_bytes": $rx_delta, "tx_bytes": $tx_delta, "rx_kbps": $rx_kbps, "tx_kbps": $tx_kbps}
+  }
+JSON
+                # Markdown Table Row
+                printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' \
+                  "$mode" "$profile" "$replicas" "$conc" "$run_id" "$tx" "$effective_latency" "$effective_jitter" \
+                  "$avg_lat" "$p95_lat" "$p99_lat" "$thr" "$err" "${ecls//|/ }" "${status//|/ }" "${fin}/${fout}" "${ferr//|/ }" \
+                  "$cpu_stats" "$mem_stats" "$rx_kbps" "$tx_kbps" >> "$md_file"
 
-            rx_rate=0
-            tx_rate=0
-            if [[ -n "$duration" && "$duration" != "0" ]]; then
-              rx_rate="$($PYTHON_BIN -c "print(int(${rx_delta} / ${duration}))")"
-              tx_rate="$($PYTHON_BIN -c "print(int(${tx_delta} / ${duration}))")"
-            fi
-
-            net_rx_kbps="$($PYTHON_BIN -c "print(round(${rx_rate} / 1024, 2))")"
-            net_tx_kbps="$($PYTHON_BIN -c "print(round(${tx_rate} / 1024, 2))")"
-
-              if [[ "$first_record" == true ]]; then
-                first_record=false
-              else
-                echo "," >> "$json_file"
-              fi
-
-              {
-                printf '%s\n' "  {"
-                printf '    "tx_mode": %s,\n' "\"$mode\""
-                printf '    "net_profile": %s,\n' "\"$profile\""
-                printf '    "replicas": %s,\n' "$replicas"
-                printf '    "concurrency": %s,\n' "$conc"
-                printf '    "run_id": %s,\n' "$run_id"
-                printf '    "transactions": %s,\n' "$tx"
-                printf '    "latency_ms": %s,\n' "$effective_latency"
-                printf '    "jitter_ms": %s,\n' "$effective_jitter"
-                printf '    "netem_validation_log": %s,\n' "\"$netem_log\""
-                printf '    "bench": %s,\n' "$(printf '%s' "$bench_json" | tr -d '\n')"
-                printf '    "resources": %s,\n' "${metrics_summary:-null}"
-                printf '    "network": {"rx_bytes": %s, "tx_bytes": %s, "rx_bps": %s, "tx_bps": %s}\n' \
-                  "$rx_delta" "$tx_delta" "$rx_rate" "$tx_rate"
-                printf '%s\n' "  }"
-              } >> "$json_file"
-
-              md_first_error="${first_error//|/ }"
-              md_status_counts="${status_counts//|/ }"
-              md_error_classes="${error_classes//|/ }"
-
-              printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' \
-                "$mode" "$profile" "$replicas" "$conc" "$run_id" "$tx" "$effective_latency" "$effective_jitter" "$avg_latency" "$p95_latency" "$p99_latency" \
-                "$throughput" "$errors" "$md_error_classes" "$md_status_counts" "${finalized}/${final_timeouts}" "$md_first_error" \
-                "${cpu_avg:-n/a}/${cpu_max:-n/a}" "${mem_avg:-n/a}/${mem_max:-n/a}" "$net_rx_kbps" "$net_tx_kbps" >> "$md_file"
-
-                log "DONE mode=$mode profile=$profile replicas=$replicas conc=$conc run=$run_id -> avg=${avg_latency}ms p95=${p95_latency}ms thr=${throughput}rps err=${errors}"
-              done
-            done
-          done
+              done # run
+            done # conc
+          done # tx
 
           clear_netem
-        done
-      done
-    done
-  done
-done
+        done # jitter
+      done # latency
+    done # replicas
+  done # profile
+done # mode
 
 echo "]" >> "$json_file"
 log "Results saved to $json_file and $md_file"
