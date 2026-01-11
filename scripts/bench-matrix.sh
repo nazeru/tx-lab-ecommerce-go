@@ -67,15 +67,24 @@ ORDER_BASE_URL="$(trim "${ORDER_BASE_URL:-http://127.0.0.1:8080}")"
 
 RESULTS_DIR="$(trim "${RESULTS_DIR:-results}")"
 LOCK_FILE="$(trim "${LOCK_FILE:-${RESULTS_DIR}/bench-matrix.lock}")"
-CONCURRENCY="$(trim "${CONCURRENCY:-10}")"
+CONCURRENCY="$(trim "${CONCURRENCY:-20}")"
 CONCURRENCY_LIST_STR="$(trim "${CONCURRENCY_LIST:-}")"
+REPLICAS_LIST_STR="$(trim "${REPLICAS_LIST:-}")"
+TX_COUNTS_LIST_STR="$(trim "${TX_COUNTS_LIST:-}")"
 BENCH_LOG_DIR="$(trim "${BENCH_LOG_DIR:-${RESULTS_DIR}/bench-logs}")"
 BENCH_RUNS_PER_POINT="$(trim "${BENCH_RUNS_PER_POINT:-3}")"
-WARMUP_TX="$(trim "${WARMUP_TX:-200}")"
+WARMUP_TX="$(trim "${WARMUP_TX:-100}")"
 WARMUP_CONCURRENCY="$(trim "${WARMUP_CONCURRENCY:-$CONCURRENCY}")"
 WARMUP_ENABLED="$(trim "${WARMUP_ENABLED:-1}")"
 INVALID_RETRY_LIMIT="$(trim "${INVALID_RETRY_LIMIT:-2}")"
 INVALID_RETRY_SLEEP="$(trim "${INVALID_RETRY_SLEEP:-3}")"
+BENCH_IN_CLUSTER="$(trim "${BENCH_IN_CLUSTER:-1}")"
+BENCH_RUNNER_IMAGE="$(trim "${BENCH_RUNNER_IMAGE:-busybox:1.36}")"
+BENCH_RUNNER_POD_PREFIX="$(trim "${BENCH_RUNNER_POD_PREFIX:-bench-runner}")"
+BENCH_RUNNER_KEEP_POD="$(trim "${BENCH_RUNNER_KEEP_POD:-0}")"
+BENCH_RUNNER_READY_TIMEOUT="$(trim "${BENCH_RUNNER_READY_TIMEOUT:-120s}")"
+BENCH_RUNNER_GOOS="$(trim "${BENCH_RUNNER_GOOS:-}")"
+BENCH_RUNNER_GOARCH="$(trim "${BENCH_RUNNER_GOARCH:-}")"
 
 # TX modes
 TX_MODES_STR="$(trim "${TX_MODES:-}")"
@@ -85,8 +94,8 @@ TX_MODES_DEFAULT=("twopc" "saga-orch" "saga-chor" "tcc" "outbox")
 NET_PROFILES_STR="$(trim "${NET_PROFILES:-}")"
 NET_PROFILES_DEFAULT=("normal" "lossy" "congested")
 
-REPLICAS_LIST=(1 3)
-TX_COUNTS=(100)
+REPLICAS_LIST=(1 3 5 7 10)
+TX_COUNTS=(5000)
 LATENCIES_MS=(10)
 JITTERS_MS=(2)
 
@@ -107,32 +116,33 @@ CONGEST_LOSS_PCT="$(trim "${CONGEST_LOSS_PCT:-0.2}")"
 MANAGE_ORDER_PF="${MANAGE_ORDER_PF:-1}"
 ORDER_PF_ADDR="$(trim "${ORDER_PF_ADDR:-127.0.0.1}")"
 ORDER_PF_PORT="$(trim "${ORDER_PF_PORT:-8080}")"
+ORDER_PF_MODE="$(trim "${ORDER_PF_MODE:-pods}")"
 ORDER_PF_LOG_DIR="$(trim "${ORDER_PF_LOG_DIR:-${RESULTS_DIR}/pf-logs}")"
 
 # Timeouts
 ROLLOUT_TIMEOUT="$(trim "${ROLLOUT_TIMEOUT:-5m}")"
-PODS_READY_TIMEOUT_SECONDS="$(trim "${PODS_READY_TIMEOUT_SECONDS:-180}")"
+PODS_READY_TIMEOUT_SECONDS="$(trim "${PODS_READY_TIMEOUT_SECONDS:-300}")"
 WAIT_AFTER_NETEM="$(trim "${WAIT_AFTER_NETEM:-1}")"
 
-KUBECTL_REQUEST_TIMEOUT="$(trim "${KUBECTL_REQUEST_TIMEOUT:-15s}")"
-KUBECTL_EXEC_TIMEOUT="$(trim "${KUBECTL_EXEC_TIMEOUT:-6s}")"
-KUBECTL_TOP_TIMEOUT="$(trim "${KUBECTL_TOP_TIMEOUT:-6s}")"
+KUBECTL_REQUEST_TIMEOUT="$(trim "${KUBECTL_REQUEST_TIMEOUT:-30s}")"
+KUBECTL_EXEC_TIMEOUT="$(trim "${KUBECTL_EXEC_TIMEOUT:-20s}")"
+KUBECTL_TOP_TIMEOUT="$(trim "${KUBECTL_TOP_TIMEOUT:-20s}")"
 
-BENCH_RUN_TIMEOUT="$(trim "${BENCH_RUN_TIMEOUT:-10m}")"
-BENCH_REQUEST_TIMEOUT="$(trim "${BENCH_REQUEST_TIMEOUT:-2s}")"
+BENCH_RUN_TIMEOUT="$(trim "${BENCH_RUN_TIMEOUT:-120m}")"
+BENCH_REQUEST_TIMEOUT="$(trim "${BENCH_REQUEST_TIMEOUT:-120s}")"
 HEARTBEAT_INTERVAL="$(trim "${HEARTBEAT_INTERVAL:-3}")"
 
 SMOKE="${SMOKE:-0}"
 READINESS_DEPLOYMENTS_STR="$(trim "${READINESS_DEPLOYMENTS:-}")"
 READY_HTTP_PATH="$(trim "${READY_HTTP_PATH:-/health}")"
-READY_HTTP_RETRIES="$(trim "${READY_HTTP_RETRIES:-20}")"
+READY_HTTP_RETRIES="$(trim "${READY_HTTP_RETRIES:-40}")"
 READY_HTTP_SLEEP="$(trim "${READY_HTTP_SLEEP:-0.5}")"
-READY_CHECKOUT_RETRIES="$(trim "${READY_CHECKOUT_RETRIES:-10}")"
+READY_CHECKOUT_RETRIES="$(trim "${READY_CHECKOUT_RETRIES:-20}")"
 READY_CHECKOUT_SLEEP="$(trim "${READY_CHECKOUT_SLEEP:-0.5}")"
 READY_CHECKOUT_BODY="$(trim "${READY_CHECKOUT_BODY:-}")"
 
 AWAIT_FINAL="$(trim "${AWAIT_FINAL:-0}")"
-FINAL_TIMEOUT="$(trim "${FINAL_TIMEOUT:-30s}")"
+FINAL_TIMEOUT="$(trim "${FINAL_TIMEOUT:-2m}")"
 FINAL_INTERVAL="$(trim "${FINAL_INTERVAL:-500ms}")"
 FINAL_STATUSES="$(trim "${FINAL_STATUSES:-CONFIRMED,COMMITTED}")"
 
@@ -161,6 +171,10 @@ fi
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || die "python3/python not found in PATH"
 command -v kubectl >/dev/null 2>&1 || die "kubectl not found in PATH"
 command -v go >/dev/null 2>&1 || die "go not found in PATH"
+
+if [[ "$BENCH_IN_CLUSTER" == "1" ]]; then
+  MANAGE_ORDER_PF=0
+fi
 
 # ----------------------------
 # Validate basics
@@ -275,6 +289,10 @@ if [[ -n "${NET_PROFILES_STR//[[:space:]]/}" ]]; then NET_PROFILES=($NET_PROFILE
 # shellcheck disable=SC2206
 if [[ -n "${CONCURRENCY_LIST_STR//[[:space:]]/}" ]]; then CONCURRENCY_LIST=($CONCURRENCY_LIST_STR); else CONCURRENCY_LIST=("$CONCURRENCY"); fi
 # shellcheck disable=SC2206
+if [[ -n "${REPLICAS_LIST_STR//[[:space:]]/}" ]]; then REPLICAS_LIST=($REPLICAS_LIST_STR); fi
+# shellcheck disable=SC2206
+if [[ -n "${TX_COUNTS_LIST_STR//[[:space:]]/}" ]]; then TX_COUNTS=($TX_COUNTS_LIST_STR); fi
+# shellcheck disable=SC2206
 if [[ -n "${READINESS_DEPLOYMENTS_STR//[[:space:]]/}" ]]; then READINESS_DEPLOYMENTS=($READINESS_DEPLOYMENTS_STR); else READINESS_DEPLOYMENTS=("$DEPLOYMENT"); fi
 
 NETEM_TARGET_SELECTORS=()
@@ -301,6 +319,8 @@ else
   METRICS_SELECTORS=("$LABEL_SELECTOR")
 fi
 
+PROBE_SERVICES=()
+PROBE_SERVICE_HOSTS=()
 # shellcheck disable=SC2206
 if [[ -n "${PROBE_SERVICES_STR//[[:space:]]/}" ]]; then PROBE_SERVICES=($PROBE_SERVICES_STR); fi
 # shellcheck disable=SC2206
@@ -337,8 +357,19 @@ fi
 # Build bench-runner
 # ----------------------------
 BENCH_BIN="${BENCH_BIN:-/tmp/bench-runner}"
-go build -o "$BENCH_BIN" ./cmd/bench-runner
+if [[ -n "${BENCH_RUNNER_GOOS//[[:space:]]/}" || -n "${BENCH_RUNNER_GOARCH//[[:space:]]/}" ]]; then
+  GOOS="${BENCH_RUNNER_GOOS:-$(go env GOOS)}" GOARCH="${BENCH_RUNNER_GOARCH:-$(go env GOARCH)}" \
+    go build -o "$BENCH_BIN" ./cmd/bench-runner
+else
+  go build -o "$BENCH_BIN" ./cmd/bench-runner
+fi
 [[ -x "$BENCH_BIN" ]] || die "bench-runner binary not found at $BENCH_BIN"
+if [[ "$BENCH_IN_CLUSTER" == "1" && -z "${BENCH_RUNNER_GOOS//[[:space:]]/}" ]]; then
+  host_goos="$(go env GOOS)"
+  if [[ "$host_goos" != "linux" ]]; then
+    log "WARNING: BENCH_IN_CLUSTER=1 with host GOOS=$host_goos. Set BENCH_RUNNER_GOOS=linux and BENCH_RUNNER_GOARCH to match your nodes."
+  fi
+fi
 
 # ----------------------------
 # Output setup
@@ -353,6 +384,7 @@ cat <<HEADER > "$md_file"
 * Deployment: $DEPLOYMENT
 * Service: $ORDER_SERVICE_NAME
 * Selectors: ${NETEM_TARGET_SELECTORS[*]}
+
 | TX mode | Net profile | Replicas | Concurrency | Run | Transactions | Latency (ms) | Jitter (ms) | Avg latency (ms) | P95 (ms) | P99 (ms) | Throughput (rps) | Errors | Error classes | Status counts | Finalized/Timeouts | First error | CPU avg/max (m) | Mem avg/max (Mi) | Net RX (KB/s) | Net TX (KB/s) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 HEADER
@@ -446,6 +478,26 @@ list_pods_for() {
   echo "$pods"
 }
 
+list_ready_pods_for() {
+  local selector="$1"
+  local pods_json
+  pods_json="$(kube get pods -n "$NAMESPACE" -l "$selector" -o json)"
+  "$PYTHON_BIN" -c '
+import json,sys
+d=json.load(sys.stdin)
+items=d.get("items",[])
+ready=[]
+for p in items:
+    meta=p.get("metadata",{}) or {}
+    if meta.get("deletionTimestamp"):
+        continue
+    cs=(p.get("status",{}) or {}).get("containerStatuses") or []
+    if cs and all(c.get("ready") for c in cs):
+        ready.append(meta.get("name",""))
+print(" ".join([p for p in ready if p]))
+' <<<"$pods_json"
+}
+
 ensure_deploy_ready() {
   local deployment="$1"
   local selector="$2"
@@ -458,6 +510,17 @@ wait_http_ready() {
   local path="$2"
   local retries="$3"
   local sleep_s="$4"
+  if [[ "$BENCH_IN_CLUSTER" == "1" ]]; then
+    ensure_bench_runner_pod
+    local url="${base_url%/}${path}"
+    for _ in $(seq 1 "$retries"); do
+      if kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" -n "$NAMESPACE" exec "$BENCH_RUNNER_POD" -- sh -c "wget -q -O /dev/null '$url'"; then
+        return 0
+      fi
+      sleep "$sleep_s"
+    done
+    return 1
+  fi
   for _ in $(seq 1 "$retries"); do
     local code
     code="$(curl -s -o /dev/null -w '%{http_code}' "${base_url%/}${path}" || echo "000")"
@@ -471,6 +534,16 @@ warmup_checkout() {
   local base_url="$1"
   local attempts="$2"
   local sleep_s="$3"
+  if [[ "$BENCH_IN_CLUSTER" == "1" ]]; then
+    local warmup_log="${BENCH_LOG_DIR}/warmup-ready-${timestamp}.log"
+    for _ in $(seq 1 "$attempts"); do
+      if run_bench_json "$base_url" 1 1 "$warmup_log" "ready" "ready" "ready" >/dev/null; then
+        return 0
+      fi
+      sleep "$sleep_s"
+    done
+    return 1
+  fi
   for _ in $(seq 1 "$attempts"); do
     local order_id
     order_id="$($PYTHON_BIN -c 'import uuid; print(uuid.uuid4())')"
@@ -502,10 +575,16 @@ ensure_readiness() {
   done
 
   ensure_order_pf
-  if ! wait_http_ready "$BENCH_BASE_URL" "$READY_HTTP_PATH" "$READY_HTTP_RETRIES" "$READY_HTTP_SLEEP"; then
+  set_bench_base_url || true
+  local ready_url
+  ready_url="$(bench_base_url_primary)"
+  if [[ -z "${ready_url//[[:space:]]/}" ]]; then
+    die "bench base url is empty after port-forward setup"
+  fi
+  if ! wait_http_ready "$ready_url" "$READY_HTTP_PATH" "$READY_HTTP_RETRIES" "$READY_HTTP_SLEEP"; then
     die "readiness check failed"
   fi
-  if ! warmup_checkout "$BENCH_BASE_URL" "$READY_CHECKOUT_RETRIES" "$READY_CHECKOUT_SLEEP"; then
+  if ! warmup_checkout "$ready_url" "$READY_CHECKOUT_RETRIES" "$READY_CHECKOUT_SLEEP"; then
     die "readiness checkout warmup failed"
   fi
 }
@@ -725,11 +804,45 @@ print(json.dumps(summary, separators=(",", ":")))
 }
 
 # ----------------------------
+# Bench-runner pod management
+# ----------------------------
+BENCH_RUNNER_POD=""
+
+ensure_bench_runner_pod() {
+  if [[ "$BENCH_IN_CLUSTER" != "1" ]]; then return 0; fi
+  if [[ -n "${BENCH_RUNNER_POD//[[:space:]]/}" ]]; then
+    if kube -n "$NAMESPACE" get pod "$BENCH_RUNNER_POD" >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+  local pod_ts
+  pod_ts="$(printf '%s' "$timestamp" | tr '[:upper:]' '[:lower:]')"
+  BENCH_RUNNER_POD="${BENCH_RUNNER_POD_PREFIX}-${pod_ts}"
+  log "Starting bench-runner pod: $BENCH_RUNNER_POD (image: $BENCH_RUNNER_IMAGE)"
+  kube -n "$NAMESPACE" run "$BENCH_RUNNER_POD" --image="$BENCH_RUNNER_IMAGE" --restart=Never --command -- sleep 36000 >/dev/null
+  kube -n "$NAMESPACE" wait --for=condition=Ready "pod/${BENCH_RUNNER_POD}" --timeout="$BENCH_RUNNER_READY_TIMEOUT" >/dev/null
+  kubectl -n "$NAMESPACE" cp "$BENCH_BIN" "${BENCH_RUNNER_POD}:/bench-runner" >/dev/null
+  kube -n "$NAMESPACE" exec "$BENCH_RUNNER_POD" -- chmod +x /bench-runner >/dev/null
+}
+
+cleanup_bench_runner_pod() {
+  if [[ "$BENCH_IN_CLUSTER" == "1" && "$BENCH_RUNNER_KEEP_POD" != "1" ]]; then
+    if [[ -n "${BENCH_RUNNER_POD//[[:space:]]/}" ]]; then
+      kube -n "$NAMESPACE" delete pod "$BENCH_RUNNER_POD" --ignore-not-found >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
+# ----------------------------
 # Port-forward management
 # ----------------------------
 ORDER_PF_PID=""
 ORDER_PF_LOG=""
 ORDER_PF_LOG_LINES=0
+ORDER_PF_PIDS=()
+ORDER_PF_PORTS=()
+ORDER_PF_PODS=()
+ORDER_PF_LOGS=()
 
 have_port_listener() {
   local port="$1"
@@ -741,28 +854,154 @@ have_port_listener() {
   return $?
 }
 
+kill_existing_order_pf() {
+  if [[ "$ORDER_PF_MODE" == "pods" ]]; then
+    for port in "${ORDER_PF_PORTS[@]}"; do
+      pkill -f "kubectl.*port-forward.*${port}:8080" >/dev/null 2>&1 || true
+    done
+    return 0
+  fi
+  # Узкий шаблон: конкретный namespace + svc + порт
+  pkill -f "kubectl.*port-forward.*-n[[:space:]]+$NAMESPACE.*svc/$ORDER_SERVICE_NAME[[:space:]]+${ORDER_PF_PORT}:8080" >/dev/null 2>&1 || true
+  pkill -f "kubectl.*port-forward.*-n[[:space:]]+$NAMESPACE.*svc/$ORDER_SERVICE_NAME[[:space:]]+${ORDER_PF_PORT}:8080" >/dev/null 2>&1 || true
+}
+
 stop_order_pf() {
-  if [[ -n "$ORDER_PF_PID" ]]; then
+  if [[ "$ORDER_PF_MODE" == "pods" ]]; then
+    local ports=("${ORDER_PF_PORTS[@]}")
+    for pid in "${ORDER_PF_PIDS[@]}"; do
+      if [[ -n "${pid//[[:space:]]/}" ]] && kill -0 "$pid" >/dev/null 2>&1; then
+        kill "$pid" >/dev/null 2>&1 || true
+        wait "$pid" >/dev/null 2>&1 || true
+        kill -9 "$pid" >/dev/null 2>&1 || true
+      fi
+    done
+    kill_existing_order_pf
+    ORDER_PF_PIDS=()
+    ORDER_PF_PORTS=()
+    ORDER_PF_PODS=()
+    ORDER_PF_LOGS=()
+
+    for port in "${ports[@]}"; do
+      for _ in $(seq 1 50); do
+        if ! have_port_listener "$port"; then
+          break
+        fi
+        sleep 0.1
+      done
+      if have_port_listener "$port"; then
+        if command -v ss >/dev/null 2>&1; then
+          ss -ltnp | grep -E "(:|\\])${port}[[:space:]]" >&2 || true
+        elif command -v lsof >/dev/null 2>&1; then
+          lsof -iTCP:"$port" -sTCP:LISTEN -n -P >&2 || true
+        fi
+        die "port $port is still busy after stopping port-forward"
+      fi
+    done
+    return 0
+  fi
+
+  if [[ -n "${ORDER_PF_PID//[[:space:]]/}" ]] && kill -0 "$ORDER_PF_PID" >/dev/null 2>&1; then
     kill "$ORDER_PF_PID" >/dev/null 2>&1 || true
     wait "$ORDER_PF_PID" >/dev/null 2>&1 || true
+    # если не умер — добить
+    kill -9 "$ORDER_PF_PID" >/dev/null 2>&1 || true
   fi
   ORDER_PF_PID=""
-  pkill -f "kubectl.*port-forward.*-n[[:space:]]+$NAMESPACE.*svc/$ORDER_SERVICE_NAME[[:space:]]+$ORDER_PF_PORT:8080" >/dev/null 2>&1 || true
+
+  # добиваем возможные “сироты”
+  kill_existing_order_pf
+
+  # дождаться освобождения порта
+  for _ in $(seq 1 50); do
+    if ! have_port_listener "$ORDER_PF_PORT"; then
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  # если всё ещё занят — показать диагностический вывод
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnp | grep -E "(:|\\])${ORDER_PF_PORT}[[:space:]]" >&2 || true
+  elif command -v lsof >/dev/null 2>&1; then
+    lsof -iTCP:"$ORDER_PF_PORT" -sTCP:LISTEN -n -P >&2 || true
+  fi
+
+  die "port $ORDER_PF_PORT is still busy after stopping port-forward"
 }
 
 start_order_pf() {
+  if [[ "$ORDER_PF_MODE" == "pods" ]]; then
+    stop_order_pf
+    local pods
+    pods="$(list_ready_pods_for "$LABEL_SELECTOR")"
+    read -r -a ORDER_PF_PODS <<< "$pods"
+    if [[ ${#ORDER_PF_PODS[@]} -eq 0 ]]; then
+      die "no pods found for selector '$LABEL_SELECTOR'"
+    fi
+
+    local idx=0
+    for pod in "${ORDER_PF_PODS[@]}"; do
+      local port=$((ORDER_PF_PORT + idx))
+      if have_port_listener "$port"; then
+        die "local port $port is already in use (set ORDER_PF_PORT=18080 or stop conflicting process)"
+      fi
+      local log_file="${ORDER_PF_LOG_DIR}/order-${timestamp}-${pod}.log"
+      : > "$log_file" || true
+      log "Starting port-forward for order: pod/$pod -> ${ORDER_PF_ADDR}:${port}"
+      command kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" -n "$NAMESPACE" \
+      port-forward "pod/$pod" "${port}:8080" --address "$ORDER_PF_ADDR" \
+      >"$log_file" 2>&1 &
+      ORDER_PF_PIDS+=("$!")
+      ORDER_PF_PORTS+=("$port")
+      ORDER_PF_LOGS+=("$log_file")
+      idx=$((idx + 1))
+    done
+
+    for i in "${!ORDER_PF_PIDS[@]}"; do
+      local pid="${ORDER_PF_PIDS[$i]}"
+      local port="${ORDER_PF_PORTS[$i]}"
+      local pod="${ORDER_PF_PODS[$i]}"
+      for _ in $(seq 1 80); do
+        if have_port_listener "$port"; then
+          sleep 1 # Give it a second to be truly ready
+          break
+        fi
+        if ! kill -0 "$pid" >/dev/null 2>&1; then
+          die "order port-forward failed to start for pod $pod"
+        fi
+        sleep 0.1
+      done
+      if ! have_port_listener "$port"; then
+        die "order port-forward timed out for pod $pod"
+      fi
+    done
+    set_bench_base_url
+    return 0
+  fi
+
   stop_order_pf
   if have_port_listener "$ORDER_PF_PORT"; then
-    die "local port $ORDER_PF_PORT is already in use"
+    kill_existing_order_pf
+    sleep 0.2
   fi
+  if have_port_listener "$ORDER_PF_PORT"; then
+    die "local port $ORDER_PF_PORT is already in use (set ORDER_PF_PORT=18080 or stop conflicting process)"
+  fi
+
   ORDER_PF_LOG="${ORDER_PF_LOG_DIR}/order-${timestamp}-txmode.log"
   : > "$ORDER_PF_LOG" || true
   log "Starting port-forward for order: svc/$ORDER_SERVICE_NAME -> ${ORDER_PF_ADDR}:${ORDER_PF_PORT}"
-  kube -n "$NAMESPACE" port-forward "svc/$ORDER_SERVICE_NAME" "${ORDER_PF_PORT}:8080" --address "$ORDER_PF_ADDR" >"$ORDER_PF_LOG" 2>&1 &
+  command kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" -n "$NAMESPACE" \
+  port-forward "svc/$ORDER_SERVICE_NAME" "${ORDER_PF_PORT}:8080" --address "$ORDER_PF_ADDR" \
+  >"$ORDER_PF_LOG" 2>&1 &
+ORDER_PF_PID=$!
+
   ORDER_PF_PID="$!"
   for _ in $(seq 1 80); do
     if have_port_listener "$ORDER_PF_PORT"; then
       sleep 1 # Give it a second to be truly ready
+      set_bench_base_url
       return 0
     fi
     if ! kill -0 "$ORDER_PF_PID" >/dev/null 2>&1; then die "order port-forward failed to start"; fi
@@ -778,8 +1017,61 @@ restart_order_pf() {
 
 ensure_order_pf() {
   if [[ "$MANAGE_ORDER_PF" != "1" ]]; then return 0; fi
+  if [[ "$ORDER_PF_MODE" == "pods" ]]; then
+    if [[ ${#ORDER_PF_PIDS[@]} -eq 0 ]]; then restart_order_pf; return 0; fi
+    local pods
+    pods="$(list_ready_pods_for "$LABEL_SELECTOR")"
+    local pods_now=()
+    read -r -a pods_now <<< "$pods"
+    if [[ ${#pods_now[@]} -eq 0 ]]; then restart_order_pf; return 0; fi
+    if [[ ${#pods_now[@]} -ne ${#ORDER_PF_PODS[@]} ]]; then restart_order_pf; return 0; fi
+    if [[ "${pods_now[*]}" != "${ORDER_PF_PODS[*]}" ]]; then restart_order_pf; return 0; fi
+    for i in "${!ORDER_PF_PIDS[@]}"; do
+      local pid="${ORDER_PF_PIDS[$i]}"
+      local port="${ORDER_PF_PORTS[$i]}"
+      if [[ -z "${pid//[[:space:]]/}" ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
+        restart_order_pf; return 0
+      fi
+      if ! have_port_listener "$port"; then
+        restart_order_pf; return 0
+      fi
+    done
+    return 0
+  fi
   if [[ -z "$ORDER_PF_PID" ]] || ! kill -0 "$ORDER_PF_PID" >/dev/null 2>&1; then restart_order_pf; return 0; fi
   if ! have_port_listener "$ORDER_PF_PORT"; then restart_order_pf; fi
+}
+
+set_bench_base_url() {
+  if [[ "$MANAGE_ORDER_PF" != "1" ]]; then
+    BENCH_BASE_URL="$ORDER_BASE_URL"
+    return 0
+  fi
+  if [[ "$ORDER_PF_MODE" == "pods" ]]; then
+    if [[ ${#ORDER_PF_PORTS[@]} -eq 0 ]]; then
+      BENCH_BASE_URL=""
+      return 1
+    fi
+    local urls=()
+    for port in "${ORDER_PF_PORTS[@]}"; do
+      urls+=("http://${ORDER_PF_ADDR}:${port}")
+    done
+    BENCH_BASE_URL="$(IFS=,; echo "${urls[*]}")"
+    return 0
+  fi
+  BENCH_BASE_URL="http://${ORDER_PF_ADDR}:${ORDER_PF_PORT}"
+}
+
+bench_base_url_primary() {
+  local base="${BENCH_BASE_URL:-}"
+  if [[ -z "${base//[[:space:]]/}" ]]; then
+    printf '%s' ""
+    return 0
+  fi
+  if [[ "$base" == *","* ]]; then
+    base="${base%%,*}"
+  fi
+  printf '%s' "$base"
 }
 
 # ----------------------------
@@ -809,15 +1101,24 @@ run_bench_json() {
   local conc="$3"
   local log_file="$4"
   local run_label="$7"
-  local args=("$BENCH_BIN" -base-url "$base_url" -total "$tx" -concurrency "$conc" -timeout "$BENCH_REQUEST_TIMEOUT")
+  local bench_bin="$BENCH_BIN"
+  if [[ "$BENCH_IN_CLUSTER" == "1" ]]; then
+    bench_bin="/bench-runner"
+  fi
+  local args=("$bench_bin" -base-url "$base_url" -total "$tx" -concurrency "$conc" -timeout "$BENCH_REQUEST_TIMEOUT")
   if [[ "$AWAIT_FINAL" == "1" ]]; then
     args+=(-await-final -final-timeout "$FINAL_TIMEOUT" -final-interval "$FINAL_INTERVAL" -final-statuses "$FINAL_STATUSES")
+  fi
+  local cmd=("${args[@]}")
+  if [[ "$BENCH_IN_CLUSTER" == "1" ]]; then
+    ensure_bench_runner_pod
+    cmd=(kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" -n "$NAMESPACE" exec "$BENCH_RUNNER_POD" -- "${args[@]}")
   fi
   local out_file
   out_file="$(mktemp)"
   local timeout_s
   timeout_s="$(duration_seconds "$BENCH_RUN_TIMEOUT")"
-  "${args[@]}" >"$out_file" 2>"$log_file" &
+  "${cmd[@]}" >"$out_file" 2>"$log_file" &
   local bench_pid=$!
   local start_ts
   start_ts="$(date +%s)"
@@ -888,38 +1189,67 @@ cleanup() {
   [[ -n "$METRICS_PID" ]] && kill "$METRICS_PID" >/dev/null 2>&1 || true
   clear_netem 1 || true
   [[ "$MANAGE_ORDER_PF" == "1" ]] && stop_order_pf || true
+  cleanup_bench_runner_pod
 }
 trap cleanup EXIT INT TERM
 
 # ----------------------------
 # Prepare URL
 # ----------------------------
+if [[ "$BENCH_IN_CLUSTER" == "1" && "$ORDER_BASE_URL" == "http://127.0.0.1:8080" ]]; then
+  ORDER_BASE_URL="http://${ORDER_SERVICE_NAME}.${NAMESPACE}.svc:8080"
+fi
+
 BENCH_BASE_URL="$ORDER_BASE_URL"
 if [[ "$MANAGE_ORDER_PF" == "1" ]]; then
-  BENCH_BASE_URL="http://${ORDER_PF_ADDR}:${ORDER_PF_PORT}"
+  BENCH_BASE_URL=""
 fi
-log "Bench base url: $BENCH_BASE_URL"
+if [[ "$MANAGE_ORDER_PF" != "1" ]]; then
+  log "Bench base url: $BENCH_BASE_URL"
+else
+  log "Bench base url: managed by port-forward (${ORDER_PF_MODE})"
+fi
+
+if [[ "$BENCH_IN_CLUSTER" == "1" ]]; then
+  ensure_bench_runner_pod
+  log "Bench runner pod ready: $BENCH_RUNNER_POD"
+fi
 
 # ----------------------------
 # Main Loop
 # ----------------------------
-for mode in "${TX_MODES[@]}"; do
-  log "Switching TX_MODE to '$mode'"
-  if [[ "$MANAGE_ORDER_PF" == "1" ]]; then stop_order_pf; fi
-  kube -n "$NAMESPACE" set env "deployment/${DEPLOYMENT}" "TX_MODE=${mode}" >/dev/null
-  kube -n "$NAMESPACE" rollout restart "deployment/${DEPLOYMENT}" >/dev/null
-  ensure_rollout
-  wait_pods_stable
-  sleep 5
-  [[ "$MANAGE_ORDER_PF" == "1" ]] && start_order_pf
+if [[ "$MANAGE_ORDER_PF" == "1" && "$ORDER_PF_MODE" == "service" ]]; then
+  for replicas in "${REPLICAS_LIST[@]}"; do
+    if (( replicas > 1 )); then
+      log "WARNING: ORDER_PF_MODE=service pins traffic to one pod; replicas won't scale (use ORDER_PF_MODE=pods or MANAGE_ORDER_PF=0)."
+      break
+    fi
+  done
+fi
+for replicas in "${REPLICAS_LIST[@]}"; do
+  log "Scale replicas=$replicas"
+  scale_replicas "$replicas"
+
+  for mode in "${TX_MODES[@]}"; do
+    log "Switching TX_MODE to '$mode'"
+    if [[ "$MANAGE_ORDER_PF" == "1" ]]; then stop_order_pf; fi
+    kube -n "$NAMESPACE" set env "deployment/${DEPLOYMENT}" "TX_MODE=${mode}" >/dev/null
+    kube -n "$NAMESPACE" rollout restart "deployment/${DEPLOYMENT}" >/dev/null
+    ensure_rollout
+    wait_pods_stable
+    sleep 5
+  if [[ "$MANAGE_ORDER_PF" == "1" ]]; then
+    start_order_pf
+    log "Bench base url: $BENCH_BASE_URL"
+  else
+    set_bench_base_url
+  fi
   ensure_readiness
-  [[ "$SMOKE" == "1" ]] && smoke_check "$BENCH_BASE_URL"
+  if [[ "$SMOKE" == "1" ]]; then
+    smoke_check "$(bench_base_url_primary)"
+  fi
 
-  for profile in "${NET_PROFILES[@]}"; do
-    for replicas in "${REPLICAS_LIST[@]}"; do
-      log "Scale replicas=$replicas (mode=$mode, profile=$profile)"
-      scale_replicas "$replicas"
-
+    for profile in "${NET_PROFILES[@]}"; do
       for latency in "${LATENCIES_MS[@]}"; do
         for jitter in "${JITTERS_MS[@]}"; do
           effective_latency="$latency"
@@ -991,7 +1321,7 @@ print(f"{avg}\t{p95}\t{p99}\t{thr}\t{err}\t{dur}\t{json.dumps(status)}\t{json.du
 ')"
 
                 # Use python to split safely (avoids spaces in JSON breaking awk)
-                read -r avg_lat p95_lat p99_lat thr err dur status ecls fin fout ferr <<< "$bench_fields"
+                IFS=$'\t' read -r avg_lat p95_lat p99_lat thr err dur status ecls fin fout ferr <<< "$bench_fields"
 
                 if [[ "$err" != "0" && -n "$ferr" ]]; then log "ERRORS: $ferr"; fi
 
@@ -1046,9 +1376,9 @@ JSON
           clear_netem
         done # jitter
       done # latency
-    done # replicas
-  done # profile
-done # mode
+    done # profile
+  done # mode
+done # replicas
 
 echo "]" >> "$json_file"
 log "Results saved to $json_file and $md_file"

@@ -120,7 +120,7 @@ func (m *metrics) recordStatus(status int, err error, class string) {
 }
 
 func main() {
-	baseURL := flag.String("base-url", getenv("ORDER_BASE_URL", "http://localhost:8080"), "order-service base URL")
+	baseURLFlag := flag.String("base-url", getenv("ORDER_BASE_URL", "http://localhost:8080"), "order-service base URL (comma-separated for multiple endpoints)")
 	inventoryURL := flag.String("inventory-url", getenv("INVENTORY_BASE_URL", ""), "inventory-service base URL")
 	paymentURL := flag.String("payment-url", getenv("PAYMENT_BASE_URL", ""), "payment-service base URL")
 	shippingURL := flag.String("shipping-url", getenv("SHIPPING_BASE_URL", ""), "shipping-service base URL")
@@ -144,11 +144,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	ops, err := buildOperations(*scenario, *baseURL, *inventoryURL, *paymentURL, *shippingURL)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
+	baseURLs := splitBaseURLs(*baseURLFlag)
+	if len(baseURLs) == 0 {
+		fmt.Fprintln(os.Stderr, "base-url must be a non-empty URL or a comma-separated list of URLs")
 		os.Exit(1)
 	}
+	baseURLValue := strings.Join(baseURLs, ",")
+
+	opsSets := make([][]operation, len(baseURLs))
+	for i, baseURL := range baseURLs {
+		ops, err := buildOperations(*scenario, baseURL, *inventoryURL, *paymentURL, *shippingURL)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(1)
+		}
+		opsSets[i] = ops
+	}
+	opsPerTx := len(opsSets[0])
 
 	tasks := make(chan struct{})
 	var wg sync.WaitGroup
@@ -159,15 +171,17 @@ func main() {
 	start := time.Now()
 	for i := 0; i < *concurrency; i++ {
 		wg.Add(1)
-		go func() {
+		ops := opsSets[i%len(opsSets)]
+		baseURL := baseURLs[i%len(baseURLs)]
+		go func(ops []operation, baseURL string) {
 			defer wg.Done()
 			for range tasks {
 				txid := uuid.NewString()
 				orderID := uuid.NewString()
-				latency, err := runTransaction(ops, txid, orderID, client, *timeout, *awaitFinal, *finalTimeout, *finalInterval, *baseURL, finalStatusSet, m)
+				latency, err := runTransaction(ops, txid, orderID, client, *timeout, *awaitFinal, *finalTimeout, *finalInterval, baseURL, finalStatusSet, m)
 				m.recordTransaction(latency, err)
 			}
-		}()
+		}(ops, baseURL)
 	}
 
 	for i := 0; i < *total; i++ {
@@ -190,13 +204,13 @@ func main() {
 
 	result := benchResult{
 		Timestamp:          time.Now().UTC().Format(time.RFC3339),
-		BaseURL:            *baseURL,
+		BaseURL:            baseURLValue,
 		Scenario:           *scenario,
 		Transactions:       *total,
 		Concurrency:        *concurrency,
-		OperationsPerTx:    len(ops),
+		OperationsPerTx:    opsPerTx,
 		TotalRequests:      *total,
-		TotalOperations:    *total * len(ops),
+		TotalOperations:    *total * opsPerTx,
 		SuccessfulRequests: m.success,
 		ErrorRequests:      m.errors,
 		DurationSeconds:    duration.Seconds(),
@@ -476,6 +490,19 @@ func getenv(key, def string) string {
 		return def
 	}
 	return v
+}
+
+func splitBaseURLs(raw string) []string {
+	parts := strings.Split(raw, ",")
+	urls := make([]string, 0, len(parts))
+	for _, part := range parts {
+		url := strings.TrimSpace(part)
+		if url == "" {
+			continue
+		}
+		urls = append(urls, url)
+	}
+	return urls
 }
 
 func classifyError(status int, body string) string {
