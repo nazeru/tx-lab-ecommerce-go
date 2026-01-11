@@ -28,7 +28,7 @@
 
 * Применяет `tc netem` на целевые поды (`NETEM_TARGET_SELECTORS`).
 * Перед каждым прогоном сохраняет вывод `tc qdisc show` и сетевые пробы во внешний лог (`netem_validation_log`).
-* Опционально запускает краткие `ping` из временного pod’а к критическим сервисам (`PROBE_SERVICES` или `PROBE_SERVICE_HOSTS`).
+* Опционально запускает краткие `ping` из временного pod’а к критическим сервисам (`PROBE_SERVICES` или `PROBE_SERVICE_HOSTS`). Для `PROBE_SERVICES` используется адрес `<service>.<namespace>.svc`.
 
 > ⚠️ Поды должны содержать утилиту `tc` (обычно пакет `iproute2`). По умолчанию отсутствие `tc` считается ошибкой. Чтобы пропустить netem для таких pod’ов и продолжить прогон, установите `NETEM_REQUIRE_TC=0`.
 
