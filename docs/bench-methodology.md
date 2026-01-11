@@ -35,9 +35,9 @@
 Пример:
 
 ```bash
-NETEM_TARGET_SELECTORS="app=order;app=inventory;app=payment;app=shipping" \
-PROBE_SERVICES="order inventory payment shipping" \
-NETEM_VALIDATE=1 \
+NETEM_TARGET_SELECTORS="app=tx-lab-ecommerce-go-txlab-order-service;app=tx-lab-ecommerce-go-txlab-inventory-service;app=tx-lab-ecommerce-go-txlab-payment-service;app=tx-lab-ecommerce-go-txlab-shipping-service" \
+PROBE_SERVICES="tx-lab-ecommerce-go-txlab-order-service tx-lab-ecommerce-go-txlab-inventory-service tx-lab-ecommerce-go-txlab-payment-service tx-lab-ecommerce-go-txlab-shipping-service" \
+NETEM_CONTAINER=netem \
 ./scripts/bench-matrix.sh
 ```
 

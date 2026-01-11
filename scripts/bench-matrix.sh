@@ -48,9 +48,9 @@ NET_PROFILES_STR="$(trim "${NET_PROFILES:-}")"
 NET_PROFILES_DEFAULT=("normal" "lossy" "congested")
 
 REPLICAS_LIST=(1 3)
-TX_COUNTS=(10000)
-LATENCIES_MS=(100)
-JITTERS_MS=(20)
+TX_COUNTS=(100)
+LATENCIES_MS=(10)
+JITTERS_MS=(2)
 
 # Network profile parameters (lossy/congested)
 LOSSY_LOSS_PCT="$(trim "${LOSSY_LOSS_PCT:-1}")"
@@ -93,6 +93,17 @@ NETEM_TARGET_SELECTORS_STR="$(trim "${NETEM_TARGET_SELECTORS:-}")"
 NETEM_VALIDATE="$(trim "${NETEM_VALIDATE:-1}")"
 NETEM_VALIDATE_LOG_DIR="$(trim "${NETEM_VALIDATE_LOG_DIR:-${RESULTS_DIR}/netem-validate}")"
 NETEM_REQUIRE_TC="$(trim "${NETEM_REQUIRE_TC:-1}")"
+# Container name used to run tc inside the pod. When using the Helm netem sidecar,
+# this should be "netem".
+NETEM_CONTAINER="$(trim "${NETEM_CONTAINER:-netem}")"
+
+# If set, and NETEM_TARGET_SELECTORS is not provided explicitly,
+# derive netem selectors from PROBE_SERVICES by assuming label "app=<service_name>".
+NETEM_TARGETS_FROM_PROBE="$(trim "${NETEM_TARGETS_FROM_PROBE:-1}")"
+
+# kubectl calls can hang on broken kubelet/metrics; keep them bounded.
+KUBECTL_REQUEST_TIMEOUT="$(trim "${KUBECTL_REQUEST_TIMEOUT:-10s}")"
+KUBECTL_EXEC_TIMEOUT="$(trim "${KUBECTL_EXEC_TIMEOUT:-3s}")"
 PROBE_SERVICES_STR="$(trim "${PROBE_SERVICES:-}")"
 PROBE_SERVICE_HOSTS_STR="$(trim "${PROBE_SERVICE_HOSTS:-}")"
 PROBE_IMAGE="$(trim "${PROBE_IMAGE:-busybox:1.36}")"
@@ -262,14 +273,24 @@ fi
 
 NETEM_TARGET_SELECTORS=()
 if [[ -n "${NETEM_TARGET_SELECTORS_STR//[[:space:]]/}" ]]; then
-  IFS=';' read -r -a NETEM_TARGET_SELECTORS <<<"$NETEM_TARGET_SELECTORS_STR"
+  if [[ "$NETEM_TARGET_SELECTORS_STR" == *";"* ]]; then
+    IFS=';' read -r -a NETEM_TARGET_SELECTORS <<<"$NETEM_TARGET_SELECTORS_STR"
+  else
+    # shellcheck disable=SC2206
+    NETEM_TARGET_SELECTORS=($NETEM_TARGET_SELECTORS_STR)
+  fi
 else
   NETEM_TARGET_SELECTORS=("$LABEL_SELECTOR")
 fi
 
 METRICS_SELECTORS=()
 if [[ -n "${METRICS_SELECTORS_STR//[[:space:]]/}" ]]; then
-  IFS=';' read -r -a METRICS_SELECTORS <<<"$METRICS_SELECTORS_STR"
+  if [[ "$METRICS_SELECTORS_STR" == *";"* ]]; then
+    IFS=';' read -r -a METRICS_SELECTORS <<<"$METRICS_SELECTORS_STR"
+  else
+    # shellcheck disable=SC2206
+    METRICS_SELECTORS=($METRICS_SELECTORS_STR)
+  fi
 else
   METRICS_SELECTORS=("$LABEL_SELECTOR")
 fi
@@ -284,6 +305,36 @@ PROBE_SERVICE_HOSTS=()
 if [[ -n "${PROBE_SERVICE_HOSTS_STR//[[:space:]]/}" ]]; then
   # shellcheck disable=SC2206
   PROBE_SERVICE_HOSTS=($PROBE_SERVICE_HOSTS_STR)
+fi
+
+# If user didn't provide probe targets, try to infer them from Helm naming:
+#   <release>-txlab-order-service -> also probe inventory/payment/shipping if present.
+if [[ ${#PROBE_SERVICES[@]} -eq 0 && ${#PROBE_SERVICE_HOSTS[@]} -eq 0 && "$NETEM_VALIDATE" == "1" ]]; then
+  PROBE_SERVICES=("$ORDER_SERVICE_NAME")
+  if [[ "$ORDER_SERVICE_NAME" == *"-order-service" ]]; then
+    prefix="${ORDER_SERVICE_NAME%-order-service}"
+    for s in inventory-service payment-service shipping-service; do
+      cand="${prefix}-${s}"
+      if kubectl get svc -n "$NAMESPACE" "$cand" >/dev/null 2>&1; then
+        PROBE_SERVICES+=("$cand")
+      fi
+    done
+  fi
+fi
+
+# If user didn't provide netem selectors explicitly, optionally derive them from PROBE_SERVICES.
+# This matches this repository's Helm chart (label: app=<service name>).
+if [[ -z "${NETEM_TARGET_SELECTORS_STR//[[:space:]]/}" && "$NETEM_TARGETS_FROM_PROBE" == "1" && ${#PROBE_SERVICES[@]} -gt 0 ]]; then
+  derived=()
+  for svc in "${PROBE_SERVICES[@]}"; do
+    # Only add if there are pods with such label.
+    if kubectl get pods -n "$NAMESPACE" -l "app=$svc" >/dev/null 2>&1; then
+      derived+=("app=$svc")
+    fi
+  done
+  if [[ ${#derived[@]} -gt 0 ]]; then
+    NETEM_TARGET_SELECTORS=("${derived[@]}")
+  fi
 fi
 
 # ----------------------------
@@ -505,12 +556,53 @@ ensure_readiness() {
 apply_tc_cmd() {
   local pod="$1"
   shift
-  kubectl exec -n "$NAMESPACE" "$pod" -- "$@" >/dev/null 2>&1 || true
+  local extra=()
+  if [[ -n "${NETEM_CONTAINER//[[:space:]]/}" ]]; then
+    extra+=("-c" "$NETEM_CONTAINER")
+  fi
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$KUBECTL_EXEC_TIMEOUT" kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- "$@" >/dev/null 2>&1 || true
+  else
+    kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- "$@" >/dev/null 2>&1 || true
+  fi
+}
+
+# Like apply_tc_cmd, but fails the whole script if the tc command cannot be applied.
+apply_tc_cmd_strict() {
+  local pod="$1"
+  shift
+  local extra=()
+  if [[ -n "${NETEM_CONTAINER//[[:space:]]/}" ]]; then
+    extra+=("-c" "$NETEM_CONTAINER")
+  fi
+
+  local out=""
+  if command -v timeout >/dev/null 2>&1; then
+    if ! out="$(timeout "$KUBECTL_EXEC_TIMEOUT" kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- "$@" 2>&1)"; then
+      log "tc failed on pod=$pod (container=${NETEM_CONTAINER:-<default>}): $*"
+      echo "$out" >&2
+      die "failed to apply netem (tc) on pod $pod"
+    fi
+  else
+    if ! out="$(kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- "$@" 2>&1)"; then
+      log "tc failed on pod=$pod (container=${NETEM_CONTAINER:-<default>}): $*"
+      echo "$out" >&2
+      die "failed to apply netem (tc) on pod $pod"
+    fi
+  fi
 }
 
 pod_has_tc() {
   local pod="$1"
-  kubectl exec -n "$NAMESPACE" "$pod" -- sh -c "command -v tc >/dev/null 2>&1" >/dev/null 2>&1
+  local extra=()
+  if [[ -n "${NETEM_CONTAINER//[[:space:]]/}" ]]; then
+    extra+=("-c" "$NETEM_CONTAINER")
+  fi
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$KUBECTL_EXEC_TIMEOUT" kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- sh -c "command -v tc >/dev/null 2>&1" >/dev/null 2>&1
+  else
+    kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- sh -c "command -v tc >/dev/null 2>&1" >/dev/null 2>&1
+  fi
 }
 
 ensure_tc_or_warn() {
@@ -520,7 +612,7 @@ ensure_tc_or_warn() {
     return 0
   fi
   if [[ "$NETEM_REQUIRE_TC" == "1" ]]; then
-    die "tc not found in pod $pod (selector=$selector); set NETEM_REQUIRE_TC=0 to skip netem for this pod"
+    die "tc not found in pod $pod (selector=$selector, container=${NETEM_CONTAINER:-<default>}); either add a netem sidecar (iproute2+NET_ADMIN) or set NETEM_REQUIRE_TC=0"
   fi
   log "WARNING: tc not found in pod $pod (selector=$selector); skipping netem"
   return 1
@@ -545,21 +637,21 @@ apply_netem_profile() {
       case "$profile" in
         normal)
           if [[ "$delay_ms" != "0" || "$jitter_ms" != "0" ]]; then
-            apply_tc_cmd "$pod" tc qdisc replace dev eth0 root netem delay "${delay_ms}ms" "${jitter_ms}ms"
+            apply_tc_cmd_strict "$pod" tc qdisc replace dev eth0 root netem delay "${delay_ms}ms" "${jitter_ms}ms"
           fi
           ;;
         lossy)
-          apply_tc_cmd "$pod" tc qdisc replace dev eth0 root netem \
+          apply_tc_cmd_strict "$pod" tc qdisc replace dev eth0 root netem \
             delay "${delay_ms}ms" "${jitter_ms}ms" \
             loss "${LOSSY_LOSS_PCT}%" \
             duplicate "${LOSSY_DUP_PCT}%" \
             reorder "${LOSSY_REORDER_PCT}%" "${LOSSY_REORDER_CORR}%"
           ;;
         congested)
-          apply_tc_cmd "$pod" tc qdisc replace dev eth0 root handle 1: netem \
+          apply_tc_cmd_strict "$pod" tc qdisc replace dev eth0 root handle 1: netem \
             delay "${delay_ms}ms" "${jitter_ms}ms" \
             loss "${CONGEST_LOSS_PCT}%"
-          apply_tc_cmd "$pod" tc qdisc replace dev eth0 parent 1:1 handle 10: tbf \
+          apply_tc_cmd_strict "$pod" tc qdisc replace dev eth0 parent 1:1 handle 10: tbf \
             rate "$CONGEST_RATE" \
             burst "$CONGEST_BURST" \
             limit "$CONGEST_LIMIT_PKTS"
@@ -597,7 +689,11 @@ sum_net_bytes() {
     [[ -n "${selector//[[:space:]]/}" ]] || continue
     for pod in $(list_pods_for "$selector"); do
       local val
-      val="$(kubectl exec -n "$NAMESPACE" "$pod" -- cat "/sys/class/net/eth0/statistics/${direction}_bytes" 2>/dev/null || echo "")"
+      if command -v timeout >/dev/null 2>&1; then
+        val="$(timeout "$KUBECTL_EXEC_TIMEOUT" kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" -- cat "/sys/class/net/eth0/statistics/${direction}_bytes" 2>/dev/null || echo "")"
+      else
+        val="$(kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" -- cat "/sys/class/net/eth0/statistics/${direction}_bytes" 2>/dev/null || echo "")"
+      fi
       if [[ -n "$val" ]]; then
         total=$((total + val))
       fi
@@ -632,8 +728,17 @@ capture_netem_state() {
           echo "---"
           continue
         fi
-        kubectl exec -n "$NAMESPACE" "$pod" -- tc qdisc show dev eth0 || true
-        kubectl exec -n "$NAMESPACE" "$pod" -- tc -s qdisc show dev eth0 || true
+        local extra=()
+        if [[ -n "${NETEM_CONTAINER//[[:space:]]/}" ]]; then
+          extra+=("-c" "$NETEM_CONTAINER")
+        fi
+        if command -v timeout >/dev/null 2>&1; then
+          timeout "$KUBECTL_EXEC_TIMEOUT" kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- tc qdisc show dev eth0 || true
+          timeout "$KUBECTL_EXEC_TIMEOUT" kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- tc -s qdisc show dev eth0 || true
+        else
+          kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- tc qdisc show dev eth0 || true
+          kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" exec -n "$NAMESPACE" "$pod" "${extra[@]}" -- tc -s qdisc show dev eth0 || true
+        fi
         echo "---"
       done
       echo
@@ -653,7 +758,8 @@ if [ ${#PROBE_SERVICE_HOSTS[@]} -gt 0 ]; then
 else
   targets=\"\"
   for svc in ${PROBE_SERVICES[*]}; do
-    targets=\"\$targets \$svc.${NAMESPACE}.svc.cluster.local\"
+    # Use service names as-is. Inside the namespace, kube-dns search paths resolve them.
+    targets=\"\$targets \$svc\"
   done
 fi
 
@@ -693,7 +799,11 @@ start_metrics_sampler() {
         selector="$(trim "$selector")"
         [[ -n "${selector//[[:space:]]/}" ]] || continue
         local output
-        output="$(kubectl top pods -n "$NAMESPACE" -l "$selector" --no-headers 2>&1 || true)"
+        if command -v timeout >/dev/null 2>&1; then
+          output="$(timeout "$KUBECTL_EXEC_TIMEOUT" kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" top pods -n "$NAMESPACE" -l "$selector" --no-headers 2>&1 || true)"
+        else
+          output="$(kubectl --request-timeout="$KUBECTL_REQUEST_TIMEOUT" top pods -n "$NAMESPACE" -l "$selector" --no-headers 2>&1 || true)"
+        fi
         if [[ -z "$output" ]]; then
           continue
         fi

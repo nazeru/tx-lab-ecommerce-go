@@ -38,5 +38,18 @@ services:
   notification-service:
     port: 8080
 
+# Network emulation support (tc/netem) for bench scripts.
+# Adds a sidecar container with iproute2 (tc) + NET_ADMIN capability.
+# If your cluster enforces restricted PodSecurity, you may need to relax the namespace policy
+# or set netem.enabled=false.
+netem:
+  enabled: true
+  containerName: netem
+  image: nicolaka/netshoot:latest
+  # Keep container alive; bench script will exec tc inside it.
+  command: ["sh", "-c", "sleep infinity"]
+  # If PodSecurity blocks NET_ADMIN, set privileged=true (less safe), or disable netem.
+  privileged: false
+
 metricsServer:
   enabled: false

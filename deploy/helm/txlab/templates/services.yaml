@@ -37,6 +37,22 @@ spec:
           ports:
             - containerPort: {{ $cfg.port }}
               name: http
+        {{- if $root.Values.netem.enabled }}
+        - name: {{ default "netem" $root.Values.netem.containerName }}
+          image: {{ default "nicolaka/netshoot:latest" $root.Values.netem.image }}
+          command:
+            {{- toYaml (default (list "sh" "-c" "sleep infinity") $root.Values.netem.command) | nindent 12 }}
+          securityContext:
+            {{- if $root.Values.netem.privileged }}
+            privileged: true
+            {{- else }}
+            runAsUser: 0
+            allowPrivilegeEscalation: true
+            capabilities:
+              add:
+                - NET_ADMIN
+            {{- end }}
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service
